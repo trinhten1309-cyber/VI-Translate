@@ -102,7 +102,7 @@ class FakeOcr:
     def __init__(self, rows):
         self.rows = rows
 
-    def __call__(self, _image):
+    def __call__(self, _image, **_options):
         result = type("Result", (), {})()
         result.boxes = [np.array(box, dtype=np.float32) for box, _, _ in self.rows]
         result.txts = [text for _, text, _ in self.rows]

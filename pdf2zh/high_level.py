@@ -33,6 +33,7 @@ from pdf2zh.doclayout import OnnxModel
 from pdf2zh.pdfinterp import PDFPageInterpreterEx
 from pdf2zh.rules import (
     classify_preserved_page,
+    has_index_page_reference,
     cluster_table_words,
     formula_regions,
     is_scanned_page,
@@ -663,7 +664,7 @@ def translate_patch(
 
             # Detect INDEX pages: many lines ending with page numbers, comma+number patterns
             if not (toc_score >= 8):
-                idx_comma_num = sum(1 for l in lines if re.search(r',\s*\d{1,4}', l))
+                idx_comma_num = sum(1 for l in lines if has_index_page_reference(l))
                 is_index_header = bool(lines and re.match(r'^index$', lines[0], re.IGNORECASE))
                 # Index pages typically have >50% lines ending with "term, number"
                 if len(lines) >= 20 and (idx_comma_num / len(lines)) > 0.4:

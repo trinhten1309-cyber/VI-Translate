@@ -45,11 +45,11 @@ def ring_pixels(arr, x0, y0, x1, y1, pad):
 def dominant_colour(pixels):
     """Most common colour around a line. A median mixes the white page above a
     line with a grey table header below it and paints a grey band."""
-    bins = (pixels // 16).astype(np.int32)
-    keys = bins[:, 0] * 256 + bins[:, 1] * 16 + bins[:, 2]
+    bins = (pixels // 4).astype(np.int32)  # fine bins: a coarse bin averages in anti-aliased edges
+    keys = (bins[:, 0] * 64 + bins[:, 1]) * 64 + bins[:, 2]
     values, counts = np.unique(keys, return_counts=True)
     top = values[counts.argmax()]
-    return pixels[keys == top].mean(axis=0)
+    return np.median(pixels[keys == top], axis=0)
 
 
 def rebuild_page(src_page, out_doc, dpi):
@@ -80,21 +80,34 @@ def rebuild_page(src_page, out_doc, dpi):
             if 0.7 * body <= s["size"] <= 1.3 * body:
                 s["size"] = body
     painted = []
+    H, W = arr.shape[:2]
     for s in spans:
-        x0, y0, x1, y1 = (int(round(v * scale)) for v in s["bbox"])
-        x0, y0, x1, y1 = max(0, x0 - 2), max(0, y0 - 2), min(arr.shape[1], x1 + 2), min(arr.shape[0], y1 + 2)
-        if x1 <= x0 or y1 <= y0:
+        cx0, cy0, cx1, cy1 = (int(round(v * scale)) for v in s["bbox"])
+        if cx1 <= cx0 or cy1 <= cy0:
             continue
+        # OCR boxes hug the letters' core; ascenders, descenders and italic
+        # overhang reach a little past it and would remain as faint ghosts.
+        h = cy1 - cy0
+        x0, x1 = max(0, cx0 - max(2, int(0.15 * h))), min(W, cx1 + max(2, int(0.15 * h)))
+        y0, y1 = max(0, cy0 - max(2, int(0.2 * h))), min(H, cy1 + max(2, int(0.2 * h)))
         ring = ring_pixels(arr, x0, y0, x1, y1, pad=4)
         bg = dominant_colour(ring)
-        inside = arr[y0:y1, x0:x1].reshape(-1, 3).astype(float)
+        inside = arr[cy0:cy1, cx0:cx1].reshape(-1, 3).astype(float)
         dist = np.linalg.norm(inside - bg, axis=1)
         far = inside[dist >= np.percentile(dist, 90)] if len(inside) else inside
         fg = far.mean(axis=0) if len(far) and dist.max() > 60 else (0, 0, 0)
-        painted.append((x0, y0, x1, y1, bg))
+        # Keep table rules and underlines that run through the margin rows.
+        region = arr[y0:y1, x0:x1].astype(float)
+        marked = np.linalg.norm(region - bg, axis=2) > 40
+        keep_rows = [r for r in range(y1 - y0)
+                     if not cy0 <= y0 + r < cy1 and marked[r].mean() > 0.5]
+        painted.append((x0, y0, x1, y1, bg, keep_rows))
         s["_fg"] = tuple(float(c) / 255 for c in fg)
-    for x0, y0, x1, y1, bg in painted:  # paint after sampling so neighbours don't affect each other
+    for x0, y0, x1, y1, bg, keep_rows in painted:  # paint after sampling so neighbours don't affect each other
+        saved = {r: arr[y0 + r, x0:x1].copy() for r in keep_rows}
         arr[y0:y1, x0:x1] = bg.astype(np.uint8)
+        for r, row in saved.items():
+            arr[y0 + r, x0:x1] = row
 
     clean = fitz.Pixmap(fitz.csRGB, pix.width, pix.height, arr.tobytes(), False)
     page = out_doc.new_page(width=src_page.rect.width, height=src_page.rect.height)
