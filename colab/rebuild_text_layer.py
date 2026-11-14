@@ -42,6 +42,16 @@ def ring_pixels(arr, x0, y0, x1, y1, pad):
     return ring if len(ring) else outer
 
 
+def dominant_colour(pixels):
+    """Most common colour around a line. A median mixes the white page above a
+    line with a grey table header below it and paints a grey band."""
+    bins = (pixels // 16).astype(np.int32)
+    keys = bins[:, 0] * 256 + bins[:, 1] * 16 + bins[:, 2]
+    values, counts = np.unique(keys, return_counts=True)
+    top = values[counts.argmax()]
+    return pixels[keys == top].mean(axis=0)
+
+
 def rebuild_page(src_page, out_doc, dpi):
     scale = dpi / 72
     pix = src_page.get_pixmap(dpi=dpi, alpha=False)
@@ -76,7 +86,7 @@ def rebuild_page(src_page, out_doc, dpi):
         if x1 <= x0 or y1 <= y0:
             continue
         ring = ring_pixels(arr, x0, y0, x1, y1, pad=4)
-        bg = np.median(ring, axis=0)
+        bg = dominant_colour(ring)
         inside = arr[y0:y1, x0:x1].reshape(-1, 3).astype(float)
         dist = np.linalg.norm(inside - bg, axis=1)
         far = inside[dist >= np.percentile(dist, 90)] if len(inside) else inside

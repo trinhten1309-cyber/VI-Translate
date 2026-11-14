@@ -27,6 +27,7 @@ from openai import OpenAI  # noqa: E402
 from router import Router  # noqa: E402
 from handoff_tools import terms_in, check  # noqa: E402
 import rebuild_text_layer as rtl  # noqa: E402
+import ocr_layer  # noqa: E402
 
 PROVIDERS = {  # name: (base url, default model)
     "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-3.5-flash"),
@@ -44,6 +45,7 @@ QUY TẮC BẮT BUỘC
 4. Thẻ <s1>…</s1> (đậm), <s2>…</s2> (nghiêng), <s3>…</s3> (đậm nghiêng): giữ đủ cặp, đặt quanh cụm từ tiếng Việt tương ứng.
 5. Văn phong giáo trình: rõ, gọn; không thêm giải thích, không bỏ ý.
 6. Tiêu đề: giữ nguyên số mục, chỉ dịch phần chữ.
+7. Văn bản có thể đến từ OCR và có lỗi nhận dạng nhỏ (ví dụ "NCl" thay cho "NCI", "0" thay cho "O"): hiểu và dịch theo nghĩa đúng, nhưng không thay đổi con số.
 
 ĐẦU VÀO: mảng JSON [{"id": ..., "src": ...}].
 ĐẦU RA: CHỈ một mảng JSON [{"id": ..., "dst": ...}], cùng số phần tử, cùng id. Không markdown, không chú thích."""
@@ -158,13 +160,14 @@ def translate_items(router, items, glossary, results, failures, depth=0):
 
 
 # ---------------------------------------------------------------- pipeline
-def run_repo(args):
+def run_repo(args, hint=""):
     cmd = [sys.executable, str(REPO / "scripts" / "translate_pdf.py"), *args]
     p = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True)
-    lines = [l for l in (p.stdout + p.stderr).splitlines() if "onnxruntime" not in l and "%|" not in l]
+    noise = ("onnxruntime", "%|", "[RapidOCR]", "not in git repo")
+    lines = [l for l in (p.stdout + p.stderr).splitlines() if not any(n in l for n in noise)]
     if p.returncode != 0:
         print("\n".join(lines[-15:]))
-        sys.exit(f"❌ translate_pdf.py lỗi (mã {p.returncode})")
+        sys.exit(f"❌ translate_pdf.py lỗi (mã {p.returncode})" + (f"\n   {hint}" if hint else ""))
     return lines
 
 
@@ -219,21 +222,35 @@ def cmd_run(a):
     pages = ["--pages", a.pages] if a.pages else []
     original = pdf
 
-    # PDF dạng ảnh + lớp chữ OCR ẩn: xoá chữ trong ảnh, dựng lại thành chữ thật
-    rebuilt = []
-    if a.image_pdf != "off":
-        need = rtl.needs_rebuild(pdf, a.pages)
+    # PDF dạng ảnh: (a) trang chỉ có ảnh -> nhận dạng chữ (OCR) thành lớp chữ ẩn;
+    # (b) trang có lớp chữ ẩn -> xoá chữ trong ảnh, dựng lại thành chữ thật.
+    source, rebuilt, engine_ocr = original, [], []
+    if a.ocr == "auto":
+        scans = ocr_layer.image_only_pages(original, a.pages)
+        if scans:
+            print(f"⓪ {len(scans)} trang chỉ có ảnh (scan) → nhận dạng chữ OCR, mỗi trang vài giây...")
+            source = work / f"{pdf.stem}-ocr.pdf"
+            ocr_layer.add_ocr_layer(
+                original, source, a.pages,
+                on_page=lambda n, total, page, kept, skipped: print(
+                    f"   OCR {n}/{total}: trang {page} — {kept} dòng"
+                    + (f", {skipped} dòng nhận dạng không chắc nên giữ nguyên ảnh" if skipped else "")))
+    elif a.ocr == "engine":
+        engine_ocr = ["--ocr", "standard"]
+    if a.image_pdf != "off" or source != original:
+        need = rtl.needs_rebuild(source, a.pages)
         if need:
-            print(f"⓪ PDF dạng ảnh có lớp chữ ẩn ({len(need)} trang) → dựng lại lớp chữ...")
+            print(f"⓪ {len(need)} trang dạng ảnh có lớp chữ → xoá chữ trong ảnh, dựng lại thành chữ thật...")
             pdf = work / pdf.name
-            rebuilt = rtl.rebuild(original, pdf, a.pages)
+            rebuilt = rtl.rebuild(source, pdf, a.pages)
             print(f"   đã dựng lại {len(rebuilt)} trang")
 
     print(f"① Tách đoạn: {pdf.name} {('trang ' + a.pages) if a.pages else '(cả file)'}")
     seg_file = work / "segments.jsonl"
     seg_file.unlink(missing_ok=True)
     run_repo([str(pdf), *pages, "--engine", "handoff", "--emit-segments", str(seg_file),
-              "--output-dir", str(work / "extract"), "--overwrite"])
+              "--output-dir", str(work / "extract"), *engine_ocr, "--overwrite"],
+             hint="Nếu PDF là ảnh scan: để OCR = auto (hoặc engine) rồi chạy lại.")
     srcs = list(dict.fromkeys(json.loads(l)["src"] for l in seg_file.open(encoding="utf-8")))
     print(f"   {len(srcs)} đoạn cần dịch")
 
@@ -283,7 +300,7 @@ def cmd_run(a):
     missing.unlink(missing_ok=True)
     own_dual = bool(rebuilt) and a.bilingual in ("side-by-side", "alternating")
     bil = [] if a.bilingual == "off" or own_dual else ["--bilingual", a.bilingual]
-    extra = font_args(a.style) + (["--no-scan-cover"] if rebuilt else [])
+    extra = font_args(a.style) + (["--no-scan-cover"] if rebuilt else []) + engine_ocr
     lines = run_repo([str(pdf), *pages, "--engine", "handoff", "--segments", str(tr_file),
                       "--output-dir", str(out_dir), "--emit-segments", str(missing), *bil,
                       *extra, "--overwrite"])
@@ -338,6 +355,9 @@ def main():
     r.add_argument("--force", action="store_true")
     r.add_argument("--style", default="Cabin", choices=FONT_STYLES,
                    help="font chữ dịch: Cabin, CabinSemiCondensed (hẹp hơn) hoặc default")
+    r.add_argument("--ocr", default="auto", choices=["auto", "engine", "off"],
+                   help="auto: trang chỉ có ảnh được OCR rồi dựng lại thành chữ (dịch cả bảng); "
+                        "engine: OCR thận trọng của repo (chỉ đoạn văn); off: tắt")
     r.add_argument("--image-pdf", default="auto", choices=["auto", "off"],
                    help="auto: tự dựng lại lớp chữ cho PDF dạng ảnh có OCR ẩn")
     a = ap.parse_args()

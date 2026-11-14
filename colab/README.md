@@ -25,6 +25,7 @@ chỉ cần chạy lại.
 | `acca_translate.py` | Quy trình chính: tách đoạn → dịch theo lô kèm thuật ngữ → kiểm tra → dựng PDF |
 | `router.py` | Tự chuyển nguồn API khi hết lượt ngày, chờ khi bị giới hạn theo phút |
 | `handoff_tools.py` | Kiểm tra bản dịch: thẻ `<bN>`/`<sN>`, số liệu, thuật ngữ |
+| `ocr_layer.py` | Trang chỉ có ảnh (scan) → nhận dạng chữ bằng RapidOCR thành lớp chữ ẩn; dòng không chắc chắn giữ nguyên ảnh |
 | `rebuild_text_layer.py` | PDF dạng ảnh có lớp chữ OCR ẩn → xoá chữ trong ảnh, dựng lại chữ thật |
 | `fonts/` | Font Cabin (SIL OFL 1.1, xem `fonts/OFL.txt`), thường và SemiCondensed |
 | `make_cabin.py` | Dựng lại `fonts/` từ bản variable font của Google Fonts |
@@ -32,7 +33,7 @@ chỉ cần chạy lại.
 ## Chạy không cần notebook
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -r requirements.txt openai   # Python 3.10–3.12
+python -m venv .venv && .venv/bin/pip install -r requirements-ocr.txt openai   # Python 3.10–3.12
 export GEMINI_API_KEY=...  GROQ_API_KEY=...
 .venv/bin/python colab/acca_translate.py test
 .venv/bin/python colab/acca_translate.py run --base "/đường/dẫn/thư mục" --pdf "/đường/dẫn/file.pdf" \
@@ -51,6 +52,8 @@ nguyên tiếng Anh), `ghi_chu` (không gửi cho API).
 
 - Trang mục lục/chỉ mục (bảng có số trang cuối dòng) được engine giữ nguyên.
 - Bảng không có đường kẻ hoặc cột căn thẳng có thể chỉ được dịch một phần.
-- PDF scan không có lớp chữ OCR thì không dịch được.
+- PDF scan không có lớp chữ: `--ocr auto` (mặc định) nhận dạng chữ rồi dịch, kể cả bảng;
+  dòng nhận dạng không chắc chắn được giữ nguyên ảnh. `--ocr engine` dùng OCR thận trọng
+  của repo (chỉ đoạn văn an toàn).
 - Gói miễn phí của Gemini/Mistral có thể dùng dữ liệu gửi lên để cải thiện mô
   hình: chỉ dịch tài liệu học tập, không gửi tài liệu nội bộ hay của khách hàng.
