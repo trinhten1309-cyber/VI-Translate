@@ -12,7 +12,10 @@ from pdf2zh import high_level
 from pdf2zh.converter import TranslateConverter
 from scripts import translate_pdf
 
-FONT_VARS = tuple(high_level.CUSTOM_FONT_ENV.values()) + (high_level.SKIP_SCAN_COVER_ENV,)
+FONT_VARS = tuple(high_level.CUSTOM_FONT_ENV.values()) + (
+    high_level.SKIP_SCAN_COVER_ENV,
+    high_level.TRANSLATE_ALL_SCAN_TEXT_ENV,
+)
 
 
 class CustomOutputFontTests(unittest.TestCase):
@@ -80,6 +83,9 @@ class CustomOutputFontCliTests(unittest.TestCase):
     def test_cli_and_engine_agree_on_variable_names(self):
         self.assertEqual(translate_pdf.CUSTOM_FONT_ENV, high_level.CUSTOM_FONT_ENV)
         self.assertEqual(translate_pdf.SKIP_SCAN_COVER_ENV, high_level.SKIP_SCAN_COVER_ENV)
+        self.assertEqual(
+            translate_pdf.TRANSLATE_ALL_SCAN_TEXT_ENV, high_level.TRANSLATE_ALL_SCAN_TEXT_ENV
+        )
 
     def test_font_options_reach_the_engine_environment(self):
         args = self.parse("--font", str(self.regular), "--no-scan-cover")
@@ -88,6 +94,15 @@ class CustomOutputFontCliTests(unittest.TestCase):
         self.assertEqual(Path(os.environ["VI_FONT_REGULAR"]), self.regular.resolve())
         self.assertEqual(os.environ["VI_SKIP_SCAN_COVER"], "1")
         self.assertEqual(os.environ["VI_FONT_BOLD"], "")
+        self.assertEqual(os.environ["VI_TRANSLATE_ALL_SCAN_TEXT"], "")
+
+    def test_translate_all_scan_text_reaches_the_engine_environment(self):
+        args = self.parse("--translate-all-scan-text")
+        translate_pdf._apply_output_options(args)
+        self.assertEqual(os.environ["VI_TRANSLATE_ALL_SCAN_TEXT"], "1")
+        # tables keep their cell logic: only these layout classes are released
+        self.assertNotIn("table", high_level.SCAN_TEXT_UNPROTECTED_CLASSES)
+        self.assertIn("abandon", high_level.SCAN_TEXT_UNPROTECTED_CLASSES)
 
     def test_a_style_face_without_a_regular_face_is_refused(self):
         args = self.parse("--font-bold", str(self.regular))

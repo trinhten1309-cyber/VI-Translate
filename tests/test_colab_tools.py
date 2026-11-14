@@ -76,6 +76,72 @@ class RebuildTextLayerTests(unittest.TestCase):
         self.assertEqual(rebuild_text_layer.needs_rebuild(source), [])
         self.assertEqual(rebuild_text_layer.rebuild(source, self.dir / "copy.pdf"), [])
 
+    def test_underlines_and_double_underlines_under_numbers_survive_whole(self):
+        # A total with a rule longer than the number (single) and a final
+        # total with a double rule, as in BPP financial statements.
+        drawn = pymupdf.open()
+        page = drawn.new_page(width=300, height=200)
+        for y, text in ((60, "16,000"), (110, "56,600")):
+            page.insert_text((200, y), text, fontsize=10)
+        # The rules sit just under the digits, inside the line's text box
+        # (which reaches down to the descender), like the book's totals.
+        page.draw_line((180, 62.5), (240, 62.5), width=0.7)
+        page.draw_line((180, 112.5), (240, 112.5), width=0.7)
+        page.draw_line((180, 114.7), (240, 114.7), width=0.7)
+        picture = page.get_pixmap(dpi=144)
+        source = self.dir / "totals.pdf"
+        scan = pymupdf.open()
+        out = scan.new_page(width=300, height=200)
+        out.insert_image(out.rect, pixmap=picture)
+        for y, text in ((60, "16,000"), (110, "56,600")):
+            out.insert_text((200, y), text, fontsize=10, render_mode=3)
+        scan.save(source)
+
+        rebuilt = self.dir / "rebuilt.pdf"
+        self.assertEqual(rebuild_text_layer.rebuild(source, rebuilt), [1])
+        doc = pymupdf.open(rebuilt)
+        picture = pymupdf.Pixmap(doc, doc[0].get_images()[0][0])
+        scale = picture.width / 300
+        pixels = np.frombuffer(picture.samples, np.uint8).reshape(
+            picture.height, picture.width, picture.n)[:, :, :3].mean(axis=2)
+
+        def darkest_row_profile(y):
+            rows = pixels[int((y - 1.2) * scale):int((y + 1.2) * scale) + 1,
+                          int(182 * scale):int(238 * scale)]
+            return rows.min(axis=0)
+
+        for y in (62.5, 112.5, 114.7):
+            profile = darkest_row_profile(y)
+            # the whole rule is there, as dark under the number as beside it
+            self.assertLess(profile.max(), 140, f"rule at y={y} has a gap")
+            self.assertLess(profile.max() - profile.min(), 60, f"rule at y={y} is uneven")
+        # while the digits themselves are gone from the picture
+        digits = pixels[int(52 * scale):int(60 * scale), int(201 * scale):int(230 * scale)]
+        self.assertGreater(digits.min(), 200)
+
+    def test_rebuilt_text_uses_the_given_font(self):
+        source = self.dir / "scan.pdf"
+        image_pdf_with_hidden_text(source, "40,600")
+        rebuilt = self.dir / "rebuilt.pdf"
+        fonts = {"regular": COLAB / "fonts" / "Cabin-Regular.ttf",
+                 "bold": COLAB / "fonts" / "Cabin-Bold.ttf"}
+        rebuild_text_layer.rebuild(source, rebuilt, fonts=fonts)
+        names = {span["font"] for block in pymupdf.open(rebuilt)[0].get_text("dict")["blocks"]
+                 for line in block.get("lines", []) for span in line["spans"]}
+        self.assertEqual(names, {"Cabin-Regular"})
+
+    def test_a_tinted_jpeg_bin_does_not_colour_the_background(self):
+        # Plain white paper whose JPEG noise put more pixels in a pinkish bin
+        # than in pure white: the patch must still be white, not pink.
+        paper = [[255, 255, 255]] * 1000
+        noise = [[255, g, 255] for g in (248, 249, 250, 251) for _ in range(400)]
+        colour = rebuild_text_layer.dominant_colour(np.array(paper + noise, float))
+        self.assertEqual(colour.tolist(), [255, 255, 255])
+        # a coloured table header still wins over the white page beside it
+        header = [[0, 179, 191]] * 900 + [[2, 181, 190]] * 300
+        colour = rebuild_text_layer.dominant_colour(np.array(header + paper[:800], float))
+        self.assertEqual(colour.tolist(), [0, 179, 191])
+
     def test_page_selection_matches_the_cli(self):
         self.assertEqual(rebuild_text_layer.parse_pages("1-3,5", 10), {0, 1, 2, 4})
         self.assertEqual(rebuild_text_layer.parse_pages("", 3), {0, 1, 2})
@@ -141,6 +207,23 @@ class OcrLayerTests(unittest.TestCase):
 
         # The rebuild step then treats it like any scanner OCR layer.
         self.assertEqual(rebuild_text_layer.needs_rebuild(target), [1])
+
+    def test_font_size_follows_the_printed_letters_not_the_box(self):
+        # "Section C" has no descender, so its OCR box only spans capital
+        # height and box-based sizing printed the heading a size too small.
+        source = self.dir / "heading.pdf"
+        scale = pure_scan_pdf(source, ["Section C", "Pedantic Co (Dec)"])
+        engine = FakeOcr([
+            (pixel_box(28, 44, 112, 62, scale), "Section C", 0.99),
+            (pixel_box(28, 84, 180, 106, scale), "Pedantic Co (Dec)", 0.99),
+        ])
+        target = self.dir / "heading-ocr.pdf"
+        ocr_layer.add_ocr_layer(source, target, engine=engine)
+        sizes = {line["spans"][0]["text"]: line["spans"][0]["size"]
+                 for block in pymupdf.open(target)[0].get_text("dict")["blocks"]
+                 for line in block.get("lines", [])}
+        self.assertAlmostEqual(sizes["Section C"], 18, delta=1)
+        self.assertAlmostEqual(sizes["Pedantic Co (Dec)"], 18, delta=1)
 
     def test_pages_that_already_have_text_are_not_recognised_again(self):
         source = self.dir / "text.pdf"
@@ -267,6 +350,29 @@ class ProviderFailoverTests(unittest.TestCase):
         self.assertEqual({row["en"] for row in rows}, {"goodwill", "NCI"})
         parsed = acca_translate.parse_json_array('```json\n[{"id": 0, "dst": "xin chào"}]\n```')
         self.assertEqual(parsed, {0: "xin chào"})
+
+    def test_publishing_replaces_old_outputs_with_new_files(self):
+        # Overwriting in place keeps a Google Drive file's id, so Drive's preview
+        # went on showing the previous run. The old file must be deleted and a
+        # new one created; a hard link to the old file proves it was not rewritten.
+        out = Path(tempfile.mkdtemp())
+        stage = Path(tempfile.mkdtemp())
+        (out / "book-vi.pdf").write_text("old run")
+        (out / "book-can-xem-lai.jsonl").write_text("stale review list")
+        (out / "old-handle").hardlink_to(out / "book-vi.pdf")
+        (stage / "book-vi.pdf").write_text("new run")
+        replaced = acca_translate.publish([stage / "book-vi.pdf"], out,
+                                          stale=[out / "book-can-xem-lai.jsonl"])
+        self.assertEqual(replaced, 1)
+        self.assertEqual((out / "book-vi.pdf").read_text(), "new run")
+        self.assertEqual((out / "old-handle").read_text(), "old run")
+        self.assertFalse((out / "book-can-xem-lai.jsonl").exists())
+
+    def test_rebuilt_numbers_use_the_translation_font(self):
+        fonts = acca_translate.rebuild_fonts("Cabin")
+        self.assertEqual(set(fonts), {"regular", "bold", "italic", "bold-italic"})
+        self.assertEqual(fonts["bold"].name, "Cabin-Bold.ttf")
+        self.assertIsNone(acca_translate.rebuild_fonts("default"))
 
     def test_outputs_keep_only_the_selected_pages(self):
         folder = Path(tempfile.mkdtemp())

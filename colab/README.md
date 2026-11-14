@@ -14,8 +14,12 @@ chung + API LLM miễn phí (Gemini, Groq, OpenRouter). Không cần cài gì tr
 4. Upload PDF vào `input/` → **Runtime → Run all**.
 
 Kết quả nằm trong `output/`: `<tên>-vi.pdf` (bản dịch) và `<tên>-vi-dual.pdf`
-(song ngữ), chỉ gồm các trang đã chọn ở `PAGES` (để trống = cả file). Notebook luôn chạy code mới nhất của repo, nên khi repo được sửa,
-chỉ cần chạy lại.
+(song ngữ), chỉ gồm các trang đã chọn ở `PAGES` (để trống = cả file). Mỗi lần
+chạy, file cũ cùng tên được xoá (vào Thùng rác của Drive) và file mới được tạo,
+để bản xem trước trên Drive luôn là bản mới nhất. Với PDF scan, mọi dòng chữ
+nhận dạng được đều được dịch, kể cả tiêu đề trong khung và chân trang; số trong
+bảng dùng cùng font với bản dịch. Notebook luôn chạy code mới nhất của repo,
+nên khi repo được sửa, chỉ cần chạy lại.
 
 ## Các file
 

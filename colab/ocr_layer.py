@@ -95,14 +95,78 @@ def recognise_again(engine, page, rect, dpi):
     return " ".join(text for _, text, _ in sorted(parts))
 
 
-def add_invisible_line(page, rect, text, bold=False):
-    """Write TEXT invisibly, stretched over RECT (points)."""
+_FONTS = {}
+
+
+def glyph_extent(text, font="helv"):
+    """Top and bottom of TEXT's glyphs in em, baseline at 0 ("Section C" has no
+    descender: about 0.74 and -0.02; "Co (Dec)" reaches -0.21)."""
+    f = _FONTS.setdefault(font, fitz.Font(font))
+    top = bottom = 0.0
+    for ch in text:
+        if not ch.isspace():
+            r = f.glyph_bbox(ord(ch))
+            top, bottom = max(top, r.y1), min(bottom, r.y0)
+    return top, bottom
+
+
+def ink_band(img, rect_px):
+    """Top and bottom pixel rows of the ink of the line inside RECT_PX, or None.
+    OCR boxes overlap the next line a little, so only the band of inked rows
+    around the box centre counts; full-width rows (underlines) are ignored."""
+    x0, y0, x1, y1 = (int(round(v)) for v in rect_px)
+    x0, y0 = max(0, x0), max(0, y0)
+    grey = img[y0:y1, x0:x1].astype(float).mean(axis=2)
+    if grey.shape[0] < 4 or grey.shape[1] < 4:
+        return None
+    paper = np.percentile(grey, 95)
+    if paper - grey.min() < 60:
+        return None
+    ink = grey < paper - 0.45 * (paper - grey.min())
+    cover = ink.mean(axis=1)
+    inked = (ink.sum(axis=1) >= 2) & (cover < 0.6)
+    rows = np.flatnonzero(inked)
+    if not len(rows):
+        return None
+    gap = max(2, int(0.12 * (y1 - y0)))  # the dot of an i is closer than the next line
+    centre = (y1 - y0) / 2
+    bands, start = [], rows[0]
+    for a, b in zip(rows[:-1], rows[1:]):
+        if b - a > gap:
+            bands.append((start, a))
+            start = b
+    bands.append((start, rows[-1]))
+    top, bottom = min(bands, key=lambda band: 0 if band[0] <= centre <= band[1]
+                      else min(abs(band[0] - centre), abs(band[1] - centre)))
+    return y0 + top, y0 + bottom + 1
+
+
+def line_metrics(rect, text, font, band=None):
+    """Font size and baseline (points) for TEXT drawn over RECT.
+    The box height alone underestimates lines without descenders ("Section C")
+    because the box only spans capital height; the measured ink band divided by
+    the glyphs' own height in em gives the printed size."""
     x0, y0, x1, y1 = rect
     height = y1 - y0
+    size, baseline = height * 0.78, y1 - height * 0.22
+    if band:
+        top, bottom = glyph_extent(text, font)
+        ink_top, ink_bottom = band
+        if top - bottom > 0.3 and ink_bottom > ink_top:
+            measured = (ink_bottom - ink_top) / (top - bottom)
+            if 0.7 * size <= measured <= 1.6 * size:  # otherwise the measure caught something else
+                size, baseline = measured, ink_bottom + bottom * measured
+    return size, baseline
+
+
+def add_invisible_line(page, rect, text, bold=False, band=None):
+    """Write TEXT invisibly, stretched over RECT (points).
+    BAND: top and bottom of the line's ink in points, when measured."""
+    x0, y0, x1, y1 = rect
     font = "hebo" if bold else "helv"
-    size = height * 0.78
+    size, baseline = line_metrics(rect, text, font, band)
     natural = fitz.get_text_length(text, fontname=font, fontsize=size)
-    origin = fitz.Point(x0, y1 - height * 0.22)
+    origin = fitz.Point(x0, baseline)
     stretch = fitz.Matrix((x1 - x0) / natural, 1)
     page.insert_text(origin, text, fontname=font, fontsize=size, render_mode=3, morph=(origin, stretch))
 
@@ -138,10 +202,14 @@ def add_ocr_layer(input_path, output_path, pages="", dpi=200, engine=None, on_pa
                 if not text or not line_fits(rect, text):
                     skipped += 1
                     continue
-            lines.append((rect, text, stroke_weight(img, [v * scale for v in rect])))
-        typical = float(np.median([w for _, _, w in lines])) if lines else 0.0
-        for rect, text, weight in lines:
-            add_invisible_line(page, rect, text, bold=typical > 0 and weight >= typical * BOLD_STROKE_RATIO)
+            rect_px = [v * scale for v in rect]
+            band = ink_band(img, rect_px)
+            band = band and (band[0] / scale, band[1] / scale)
+            lines.append((rect, text, stroke_weight(img, rect_px), band))
+        typical = float(np.median([w for _, _, w, _ in lines])) if lines else 0.0
+        for rect, text, weight, band in lines:
+            add_invisible_line(page, rect, text, bold=typical > 0 and weight >= typical * BOLD_STROKE_RATIO,
+                               band=band)
         if on_page:
             on_page(n, len(targets), i + 1, len(lines), skipped)
     doc.save(output_path, garbage=3, deflate=True)
