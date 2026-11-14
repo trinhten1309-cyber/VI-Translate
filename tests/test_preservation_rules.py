@@ -12,6 +12,7 @@ from pdf2zh.rules import (
     classify_preserved_page,
     cluster_table_words,
     formula_regions,
+    has_index_page_reference,
     is_bullet_character,
     is_formula_font,
     is_scanned_page,
@@ -261,6 +262,19 @@ class PreservationRuleTests(unittest.TestCase):
         decision = classify_preserved_page(text)
         self.assertIsNotNone(decision)
         self.assertEqual(decision.kind, "INDEX")
+
+    def test_financial_statement_amounts_are_not_index_page_numbers(self):
+        rows = ("Revenue", "Cost of sales", "Gross profit", "Administrative expenses",
+                "Operating profit", "Profit before tax", "Income tax expense",
+                "Profit for the year", "Retained earnings", "Total equity")
+        lines = ["Draft statements of profit or loss for the year ended 30 September 20X8"]
+        for n, row in enumerate(rows):
+            lines += [row, f"{3 + n},463,760", f"({1 + n},558,690)", f"{n + 2}05,070"]
+        self.assertIsNone(classify_preserved_page("\n".join(lines)))
+        self.assertFalse(has_index_page_reference("3,463,760"))
+        self.assertFalse(has_index_page_reference("(1,558,690)"))
+        self.assertTrue(has_index_page_reference("Leasing 108, 127, 132"))
+        self.assertTrue(has_index_page_reference("Goodwill, 45"))
 
     def test_nomenclature_page_keeps_symbol_definition_pairs(self):
         lines = ["Nomenclature"]

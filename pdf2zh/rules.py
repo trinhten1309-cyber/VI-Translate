@@ -588,6 +588,18 @@ def is_scanned_page(blocks: Iterable[Mapping[str, Any]], page_area: float) -> bo
     return False
 
 
+_GROUPED_AMOUNT = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?")
+
+
+def has_index_page_reference(line: str) -> bool:
+    """True for back-of-book entries such as ``Leasing, 108, 127``.
+
+    Thousands separators are not page references: a financial statement whose
+    rows read ``3,463,760`` or ``(1,558,690)`` must stay translatable.
+    """
+    return bool(re.search(r",\s*\d{1,4}", _GROUPED_AMOUNT.sub("#", line)))
+
+
 def classify_preserved_page(page_text: str) -> PreservationDecision | None:
     """Classify pages whose number-heavy structure must not be reflowed."""
     lines = [line.strip() for line in page_text.splitlines() if line.strip()]
@@ -640,9 +652,7 @@ def classify_preserved_page(page_text: str) -> PreservationDecision | None:
     if toc_score >= 8:
         return PreservationDecision("TOC", f"score={toc_score}")
 
-    index_comma_numbers = sum(
-        1 for line in lines if re.search(r",\s*\d{1,4}", line)
-    )
+    index_comma_numbers = sum(1 for line in lines if has_index_page_reference(line))
     if len(lines) >= 20 and index_comma_numbers / len(lines) > 0.4:
         return PreservationDecision(
             "INDEX", f"comma_num={index_comma_numbers}/{len(lines)}"

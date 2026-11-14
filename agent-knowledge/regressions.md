@@ -18,6 +18,7 @@ same file before starting the next queued file, without a manual resume.
 | Bold or italic disappears | Translation collapsed every run into the regular font | Validated `<s1..3>` pairs, variant selection, synthetic fallback tests |
 | Formula moves, overlaps, or exposes `{vN}` | Ordinary-font math was translated as prose or translator damaged placeholders | Formula regions, stacked fraction detection, safe tag round-trip tests |
 | Table labels stay English | Earlier pipeline protected the entire model table | Translate only matched cells; preserve unmatched tables and technical codes |
+| A financial statement page stays entirely English ("image-only" warning on a page with text) | Thousands separators (`3,463,760`) counted as index `term, page` references, so >40% amount rows classified the page as INDEX | `has_index_page_reference()` strips grouped amounts first, in `rules.py` and the inline `translate_patch` copy; `test_preservation_rules.py` |
 | Paragraph crosses the right edge | Width budget ignored first-line indentation | `paragraph_width_budget()` regression |
 | Last table line crosses a row | Font shrank after ink was measured, or preserved code remained larger than prose | Recompute final ink, fit union, then shift inside cell bounds |
 | Bullets vanish on Mac or Windows | Office encoded Wingdings/Symbol bullets as PUA characters absent from Go Noto and Times New Roman | `is_bullet_character()` preserves the embedded dingbat glyph; preservation tests |

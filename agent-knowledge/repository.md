@@ -25,7 +25,10 @@
 - `scripts/fetch_assets.py`: downloads the layout model and Unicode PDF font.
 - `colab/`: fork-specific Google Colab workflow (notebook, LLM-provider
   failover, glossary checks, RapidOCR line layers for image-only scans
-  (`ocr_layer.py`, low-confidence or letter-losing lines stay as pixels),
+  (`ocr_layer.py`: no angle classifier, a failed line is re-read on its own
+  crop, vertical tabs and still-failing lines stay as pixels, bold from stroke
+  width), repainting with the dominant ring colour over a margin that spares
+  table rules,
   rebuild of image PDFs with an invisible OCR layer,
   bundled OFL Cabin fonts). It drives `scripts/translate_pdf.py` through the
   handoff engine and never imports engine internals except the handoff
