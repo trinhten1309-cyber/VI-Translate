@@ -71,6 +71,17 @@ STYLE_FONT_NAMES = {
     3: "noto-bolditalic",
 }
 BASE14_STYLE_FONTS = {0: "tiro", 1: "tibo", 2: "tiit", 3: "tibi"}
+# A caller-chosen output family (for example a Canva font on Colab), one file per
+# face. Only the regular face is required; missing faces are synthesized.
+CUSTOM_FONT_ENV = {
+    0: "VI_FONT_REGULAR",
+    1: "VI_FONT_BOLD",
+    2: "VI_FONT_ITALIC",
+    3: "VI_FONT_BOLDITALIC",
+}
+# Set to skip the white boxes drawn over translated text on scanned pages, for
+# input whose picture text has already been removed (a rebuilt OCR layer).
+SKIP_SCAN_COVER_ENV = "VI_SKIP_SCAN_COVER"
 
 logger = logging.getLogger(__name__)
 LARGE_DOCUMENT_SUBSET_PAGE_LIMIT = 200
@@ -111,6 +122,21 @@ def pdf_write_options(page_count: int, source_size: int = 0) -> dict[str, int | 
     return {"deflate": True, "garbage": 3, "use_objstms": 1}
 
 
+def custom_output_fonts() -> dict[int, str]:
+    """Faces of a caller-chosen output family, read from ``CUSTOM_FONT_ENV``.
+
+    Faces whose file does not exist are ignored, and nothing is returned unless
+    the regular face exists, so a mistyped path falls back to the default font.
+    """
+    faces = {
+        style: Path(os.environ[name])
+        for style, name in CUSTOM_FONT_ENV.items()
+        if os.environ.get(name)
+    }
+    faces = {style: str(path) for style, path in faces.items() if path.is_file()}
+    return faces if 0 in faces else {}
+
+
 def output_style_font_paths(language: str, regular_path: str) -> dict[int, str]:
     """Resolve regular/bold/italic/bold-italic fonts for translated prose.
 
@@ -121,6 +147,10 @@ def output_style_font_paths(language: str, regular_path: str) -> dict[int, str]:
     """
     regular = str(Path(regular_path))
     result = {style: regular for style in STYLE_FONT_NAMES}
+    custom = custom_output_fonts()
+    if custom and Path(custom[0]) == Path(regular):
+        result.update(custom)
+        return result
     if Path(regular).name.lower() != "times.ttf":
         return result
     windows_variants = {
@@ -367,6 +397,8 @@ def translate_patch(
         class_bounds,
         ocr_paragraph_classes,
     )
+    device.uniform_output_font = bool(custom_output_fonts())
+    device.cover_scanned_text = not os.environ.get(SKIP_SCAN_COVER_ENV)
 
     if hasattr(device.translator, "on_status"):
         device.translator.on_status = on_status
@@ -1037,6 +1069,11 @@ def download_remote_fonts(lang: str):
             for la in langs
         },
     }
+
+    custom = custom_output_fonts()
+    if custom:
+        logger.info(f"use font: {Path(custom[0]).as_posix()}")
+        return Path(custom[0]).as_posix()
 
     # Use Times New Roman for Vietnamese
     if lang == "vi":

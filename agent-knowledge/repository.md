@@ -23,6 +23,12 @@
   dark mode.
 - `scripts/translate_pdf.py`: supported CLI and stable output staging.
 - `scripts/fetch_assets.py`: downloads the layout model and Unicode PDF font.
+- `colab/`: fork-specific Google Colab workflow (notebook, LLM-provider
+  failover, glossary checks, rebuild of image PDFs with an invisible OCR layer,
+  bundled OFL Cabin fonts). It drives `scripts/translate_pdf.py` through the
+  handoff engine and never imports engine internals except the handoff
+  placeholder validators; `tests/test_colab_tools.py` covers it and skips the
+  provider tests when `openai` is absent.
 - `pdf2zh/`: bundled extraction, translation, preservation, and PDF rendering.
   `pdf2zh/bilingual.py` builds the opt-in bilingual copy from two finished
   PDFs.

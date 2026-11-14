@@ -164,6 +164,21 @@ marker, and sent Mac users off to reinstall a complete app.
   a lone token such as `2` receive a bounded, gentle font reduction to balance
   the wrap without affecting ordinary body paragraphs.
 
+## Caller-Chosen Output Font
+
+- `--font`/`--font-bold`/`--font-italic`/`--font-bold-italic` (CLI) set
+  `VI_FONT_REGULAR`/`_BOLD`/`_ITALIC`/`_BOLDITALIC`; `custom_output_fonts()` in
+  `high_level.py` reads them. The regular face replaces the downloaded/Windows
+  font, missing faces stay synthesized, and a missing regular file falls back
+  to the default font. With a custom family the converter sets
+  `uniform_output_font` and draws every glyph the family covers with it, the
+  same path OCR paragraphs use, so Latin letters never switch to Base14 Times
+  beside Vietnamese diacritics.
+- `--no-scan-cover` sets `VI_SKIP_SCAN_COVER`; the converter then skips the
+  white boxes it draws over translated text on scanned pages. Use it only when
+  the picture text was already removed (for example `colab/rebuild_text_layer.py`);
+  otherwise the source ink shows through.
+
 ## Colour and Emphasis
 
 The colour in force is captured as the source wrote it and replayed in front of

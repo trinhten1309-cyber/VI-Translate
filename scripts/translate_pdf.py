@@ -52,6 +52,17 @@ BILINGUAL_MODES = ("off", "side-by-side", "alternating", "layers")
 DEFAULT_THREADS = 4
 MAX_THREADS = 8
 
+# Environment the engine reads for --font* and --no-scan-cover. Kept here so the
+# CLI does not import the heavy core just to parse arguments; must match
+# pdf2zh.high_level.CUSTOM_FONT_ENV / SKIP_SCAN_COVER_ENV (checked by tests).
+CUSTOM_FONT_ENV = {
+    0: "VI_FONT_REGULAR",
+    1: "VI_FONT_BOLD",
+    2: "VI_FONT_ITALIC",
+    3: "VI_FONT_BOLDITALIC",
+}
+SKIP_SCAN_COVER_ENV = "VI_SKIP_SCAN_COVER"
+
 
 class TranslationError(RuntimeError):
     """Raised when input validation or the translation engine fails."""
@@ -219,6 +230,20 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="handoff engine: write the segments left untranslated here, as JSONL",
     )
+    parser.add_argument(
+        "--font",
+        type=Path,
+        help="TTF/OTF for translated text (regular face); every translated glyph it covers uses it",
+    )
+    parser.add_argument("--font-bold", type=Path, help="bold face of --font")
+    parser.add_argument("--font-italic", type=Path, help="italic face of --font")
+    parser.add_argument("--font-bold-italic", type=Path, help="bold italic face of --font")
+    parser.add_argument(
+        "--no-scan-cover",
+        action="store_true",
+        help="do not draw white boxes over translated text on scanned pages "
+        "(use when the picture text was already removed)",
+    )
     parser.add_argument("--ignore-cache", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     return parser
@@ -232,6 +257,22 @@ def _validate_arguments(args: argparse.Namespace) -> None:
             raise TranslationError("--engine handoff needs --segments, --emit-segments, or both")
     elif args.segments is not None or args.emit_segments is not None:
         raise TranslationError("--segments and --emit-segments require --engine handoff")
+    faces = (args.font, args.font_bold, args.font_italic, args.font_bold_italic)
+    if args.font is None and any(faces[1:]):
+        raise TranslationError("--font-bold/--font-italic/--font-bold-italic need --font")
+    for face in faces:
+        if face is not None and not face.expanduser().is_file():
+            raise TranslationError(f"font file not found: {face}")
+
+
+def _apply_output_options(args: argparse.Namespace) -> None:
+    """Hand the font and scan-cover choices to the engine through its environment."""
+    faces = (args.font, args.font_bold, args.font_italic, args.font_bold_italic)
+    for name, face in zip(CUSTOM_FONT_ENV.values(), faces):
+        if face is not None:
+            os.environ[name] = str(face.expanduser().resolve())
+    if args.no_scan_cover:
+        os.environ[SKIP_SCAN_COVER_ENV] = "1"
 
 
 def _require_core() -> None:
@@ -748,6 +789,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         _validate_arguments(args)
+        _apply_output_options(args)
         result = translate_pdf(
             args.input_pdf,
             args.output_dir,

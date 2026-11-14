@@ -1,3 +1,6 @@
+> **Bản fork này** có thêm quy trình dịch tài liệu ACCA miễn phí trên Google Colab cho cả team:
+> xem [`colab/README.md`](colab/README.md).
+
 <p align="center">
   <img src=".github/assets/logo.png" alt="PDF Translate logo" width="160">
 </p>
