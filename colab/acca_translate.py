@@ -203,6 +203,24 @@ def font_args(style):
     return args
 
 
+def keep_selected_pages(path, pages, per_page=1):
+    """Drop the pages outside PAGES from an output PDF: they were never
+    translated, so keeping them made the translated file look half-done.
+    PER_PAGE is 2 for an alternating bilingual file (source + translation)."""
+    import pymupdf as fitz
+    doc = fitz.open(path)
+    count = doc.page_count // per_page
+    keep = sorted(rtl.parse_pages(pages, count))
+    if not keep or len(keep) == count:
+        doc.close()
+        return
+    doc.select([k * per_page + j for k in keep for j in range(per_page)])
+    tmp = path.with_name(path.stem + ".tmp.pdf")
+    doc.save(tmp, garbage=3, deflate=True)
+    doc.close()
+    tmp.replace(path)
+
+
 def load_cache(path):
     cache = {}
     if path.exists():
@@ -312,6 +330,12 @@ def cmd_run(a):
         dual = out_dir / f"{pdf.stem}-vi-dual.pdf"
         make_dual(original, mono, dual, a.bilingual, a.pages)
         print(f"   Bilingual PDF ({a.bilingual}, trang gốc thật): output/{dual.name}")
+    if a.pages:
+        keep_selected_pages(out_dir / f"{pdf.stem}-vi.pdf", a.pages)
+        repo_dual = out_dir / f"{pdf.stem}-vi-dual.pdf"
+        if not own_dual and bil and repo_dual.exists():
+            keep_selected_pages(repo_dual, a.pages, 2 if a.bilingual == "alternating" else 1)
+        print(f"   Các file trong output/ chỉ gồm trang {a.pages} (để trống PAGES để dịch cả file)")
 
     n_missing = sum(1 for _ in missing.open(encoding="utf-8")) if missing.exists() else 0
     if failures:
