@@ -989,6 +989,12 @@ class TranslateConverter(PDFConverterEx):
         }
         self.translator: BaseTranslator = None
         self.scanned_pages: set = set()
+        # A caller-chosen output family is used for every glyph it covers,
+        # so Latin letters do not switch to Base14 Times next to diacritics.
+        self.uniform_output_font = False
+        # Cover translated text on scanned pages unless the caller already
+        # removed the picture text (white boxes would wipe coloured cells).
+        self.cover_scanned_text = True
         # Segments whose retries ran out; reported as a partial translation.
         self.translation_failures: list[str] = []
         # Why each of those was left alone. The caller used to see only a count
@@ -1567,7 +1573,7 @@ class TranslateConverter(PDFConverterEx):
                 return "".join(["%02x" % ord(c) for c in cstk])
 
         def output_font(character: str, style: int, size: float) -> tuple[str, float]:
-            if ocr_paragraphs:
+            if ocr_paragraphs or self.uniform_output_font:
                 # One Unicode family for Latin and Vietnamese glyphs avoids
                 # per-character jumps between Base14 Times and embedded fonts.
                 font_name = self.style_font_names.get(style, self.noto_name)
@@ -1620,7 +1626,7 @@ class TranslateConverter(PDFConverterEx):
 
         # Draw white rectangles to cover original text in background image (scanned PDFs only)
         white_rects = ""
-        if ltpage.pageid in self.scanned_pages:
+        if ltpage.pageid in self.scanned_pages and self.cover_scanned_text:
             pad = 3  # padding to fully cover original text with descenders/ascenders
             for id, new in enumerate(news):
                 if new != sstk[id]:  # Only cover areas that were translated
