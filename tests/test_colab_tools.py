@@ -15,9 +15,11 @@ COLAB = Path(__file__).resolve().parents[1] / "colab"
 sys.path.insert(0, str(COLAB))
 
 import handoff_tools  # noqa: E402
+import ocr_layer  # noqa: E402
 import rebuild_text_layer  # noqa: E402
 
 HAS_OPENAI = importlib.util.find_spec("openai") is not None
+HAS_RAPIDOCR = importlib.util.find_spec("rapidocr") is not None
 
 
 def image_pdf_with_hidden_text(path: Path, text: str = "Cost of capital") -> pymupdf.Rect:
@@ -78,6 +80,84 @@ class RebuildTextLayerTests(unittest.TestCase):
         self.assertEqual(rebuild_text_layer.parse_pages("1-3,5", 10), {0, 1, 2, 4})
         self.assertEqual(rebuild_text_layer.parse_pages("", 3), {0, 1, 2})
         self.assertEqual(rebuild_text_layer.parse_pages("8-20", 10), {7, 8, 9})
+
+
+def pure_scan_pdf(path: Path, lines: list[str]) -> float:
+    """Image-only page (no text at all) showing LINES; returns the render scale."""
+    drawn = pymupdf.open()
+    page = drawn.new_page(width=400, height=300)
+    for n, text in enumerate(lines):
+        page.insert_text((30, 60 + 40 * n), text, fontsize=18)
+    picture = page.get_pixmap(dpi=200)
+    scan = pymupdf.open()
+    out = scan.new_page(width=400, height=300)
+    out.insert_image(out.rect, pixmap=picture)
+    scan.save(path)
+    return 200 / 72
+
+
+class FakeOcr:
+    """Stands in for RapidOCR: returns fixed boxes in 200-dpi pixel space."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def __call__(self, _image):
+        result = type("Result", (), {})()
+        result.boxes = [np.array(box, dtype=np.float32) for box, _, _ in self.rows]
+        result.txts = [text for _, text, _ in self.rows]
+        result.scores = [score for _, _, score in self.rows]
+        return result
+
+
+def pixel_box(x0, y0, x1, y1, scale):
+    return [[x0 * scale, y0 * scale], [x1 * scale, y0 * scale],
+            [x1 * scale, y1 * scale], [x0 * scale, y1 * scale]]
+
+
+class OcrLayerTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+
+    def test_confident_lines_get_an_invisible_layer_over_their_box(self):
+        source = self.dir / "scan.pdf"
+        scale = pure_scan_pdf(source, ["Cost of capital", "Gearing"])
+        self.assertEqual(ocr_layer.image_only_pages(source), [1])
+        engine = FakeOcr([
+            (pixel_box(30, 46, 150, 64, scale), "Cost of capital", 0.99),
+            (pixel_box(30, 86, 100, 104, scale), "Gearing", 0.40),        # unsure: stays picture
+            (pixel_box(30, 126, 380, 144, scale), "Go  t   cith", 0.95),  # lost letters: stays picture
+        ])
+        target = self.dir / "scan-ocr.pdf"
+        self.assertEqual(ocr_layer.add_ocr_layer(source, target, engine=engine), [1])
+
+        page = pymupdf.open(target)[0]
+        traces = page.get_texttrace()
+        self.assertTrue(traces and all(trace["type"] == 3 for trace in traces))
+        self.assertEqual(page.get_text().split(), ["Cost", "of", "capital"])
+        words = page.get_text("words")
+        self.assertAlmostEqual(words[0][0], 30, delta=2)
+        self.assertAlmostEqual(words[-1][2], 150, delta=3)
+
+        # The rebuild step then treats it like any scanner OCR layer.
+        self.assertEqual(rebuild_text_layer.needs_rebuild(target), [1])
+
+    def test_pages_that_already_have_text_are_not_recognised_again(self):
+        source = self.dir / "text.pdf"
+        doc = pymupdf.open()
+        doc.new_page().insert_text((72, 72), "Ordinary text")
+        doc.save(source)
+        self.assertEqual(ocr_layer.image_only_pages(source), [])
+        unused = FakeOcr([])
+        self.assertEqual(ocr_layer.add_ocr_layer(source, self.dir / "copy.pdf", engine=unused), [])
+
+    @unittest.skipUnless(HAS_RAPIDOCR, "rapidocr comes from requirements-ocr.txt")
+    def test_rapidocr_reads_a_rendered_scan(self):
+        source = self.dir / "scan.pdf"
+        pure_scan_pdf(source, ["Weighted average cost of capital"])
+        target = self.dir / "scan-ocr.pdf"
+        self.assertEqual(ocr_layer.add_ocr_layer(source, target), [1])
+        self.assertIn("capital", pymupdf.open(target)[0].get_text())
 
 
 class HandoffCheckTests(unittest.TestCase):
