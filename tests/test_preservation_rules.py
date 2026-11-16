@@ -243,6 +243,8 @@ class TextAlignedTableTests(unittest.TestCase):
         self.assertFalse(is_footnote_text((111, 695, 459, 714), note, 842))  # last text on the page
         header = _words(0, 99, (112, "1"), (120, "A running header of six words or more"))
         self.assertFalse(is_footnote_text((111, 97, 459, 110), header + footer, 842))
+        glued = _words(8, 697, (112, "\u2217Equal contribution. Listing order is random and fair."))
+        self.assertTrue(is_footnote_text((111, 695, 459, 714), glued + footer, 842))
         plain = _words(8, 697, (112, "Chapter 3 Business combinations and group accounts continued"))
         self.assertFalse(is_footnote_text((111, 695, 459, 714), plain + footer, 842))
 
@@ -289,6 +291,45 @@ class FinancialStatementTests(unittest.TestCase):
     def test_a_table_without_a_grid_has_no_heading_cells(self):
         words = _words(0, 10, (10, "Three Months Ended"))
         self.assertEqual(table_heading_cells((0, 0, 400, 50), [], words), [])
+
+    def test_cash_flow_rows_are_cut_at_their_figures(self):
+        """Microsoft 10-Q, quarter ended December 31, 2025, page 6: four figure
+        columns put the median space at 19.5 pt and merged every column; then
+        tight rows at one indent ran together as one cell."""
+        words = (
+            _words(0, 132, (20, "Operations"))
+            + _words(1, 144, (20, "Net income"), (370, "$"), (400, "38,458"), (470, "$"), (500, "24,108"))
+            + _words(2, 155, (20, "Adjustments to reconcile net income to net cash:"))
+            + _words(3, 166, (27, "Depreciation, amortization, and other"), (400, "9,198"), (500, "5,667"))
+            + _words(4, 177, (27, "Stock-based compensation expense"), (400, "3,219"), (500, "3,089"))
+            + _words(5, 189, (20, "Acquisition of companies, net of cash acquired and divestitures,"))
+            + _words(6, 200, (27, "and purchases of intangible assets"), (400, "(455)"), (500, "(1,405)"))
+            + _words(7, 211, (20, "Purchases of investments"), (400, "(9,845)"), (500, "(2,050)"))
+        )
+        cells = text_aligned_table_cells((18, 128, 577, 220), words)
+        # A lone "$" joins the label column; cluster_table_words parts it off.
+        texts = [text.replace(" $", "") for text in TextAlignedTableTests._cells_text(None, cells, words)
+                 if any(character.islower() for character in text)]
+        self.assertEqual(texts, [
+            "Operations", "Net income", "Adjustments to reconcile net income to net cash:",
+            "Depreciation, amortization, and other", "Stock-based compensation expense",
+            "Acquisition of companies, net of cash acquired and divestitures, "
+            "and purchases of intangible assets",
+            "Purchases of investments",
+        ])
+
+    def test_a_right_aligned_column_heading_stays_one_cell(self):
+        words = (
+            _words(0, 145, (148, "Fair"), (440, "Cash"))
+            + _words(1, 153, (145, "Value"), (424, "and Cash"))
+            + _words(2, 162, (145, "Level"), (409, "Equivalents"))
+        )
+        for line, (level, amount) in enumerate((("Level 1", "1,234"), ("Level 2", "567"))):
+            words += _words(3 + line, 180 + line * 12, (20, "Commercial paper"), (145, level), (430, amount))
+        cells = text_aligned_table_cells((18, 140, 577, 210), words)
+        texts = TextAlignedTableTests._cells_text(None, cells, words)
+        self.assertIn("Cash and Cash Equivalents", texts)
+        self.assertIn("Fair Value Level", texts)
 
     def test_a_statement_title_above_its_table_is_a_caption(self):
         tables = [(17, 113, 594, 317)]

@@ -450,7 +450,11 @@ def table_bounds_clear_of_text(
     return x0, y0, x1, y1
 
 
-FOOTNOTE_MARKER_PATTERN = re.compile(r"(?:\d{1,3}|[*\u2020\u2021\u00a7]{1,3}|\([a-z0-9]{1,2}\))")
+FIGURE_PATTERN = re.compile(r"[$€£¥(]?[\d.,]*\d[\d.,]*%?\)?|[—–-]{1,2}|\$")
+FOOTNOTE_MARKER_PATTERN = re.compile(r"(?:\d{1,3}|[*\u2217\u2020\u2021\u00a7\u00b6]{1,3}|\([a-z0-9]{1,2}\))")
+# A footnote mark set tight against its first word: "\u2217Equal contribution",
+# "5We used values", "1http://image-net.org".
+GLUED_FOOTNOTE_MARKER_PATTERN = re.compile(r"(?:[*\u2217\u2020\u2021\u00a7\u00b6]{1,3}[A-Za-z]|\d{1,2}(?:[A-Z][a-z]|https?:)).*")
 
 
 def table_heading_cells(
@@ -649,7 +653,8 @@ def is_footnote_text(
     return (
         below
         and len(inside) >= 6
-        and FOOTNOTE_MARKER_PATTERN.fullmatch(inside[0][2]) is not None
+        and (FOOTNOTE_MARKER_PATTERN.fullmatch(inside[0][2]) is not None
+             or GLUED_FOOTNOTE_MARKER_PATTERN.fullmatch(inside[0][2]) is not None)
         and any(character.islower() for _cy, _x, text in inside[1:] for character in text)
     )
 
@@ -702,7 +707,12 @@ def text_aligned_table_cells(
         for previous, current in zip(sorted(row), sorted(row)[1:])
         if current[0] > previous[2]
     ]
-    gutter = max(3.0, height * 0.4, 2.0 * median(spaces) if spaces else 0.0)
+    # Only spaces narrower than a line is high are word spaces. A statement
+    # with four figure columns has more gaps between figures than between
+    # words: Microsoft's cash flow statement put the median at 19.5 pt, the
+    # gutter at 39 pt, and every column merged into one.
+    word_spaces = [space for space in spaces if space <= height]
+    gutter = max(3.0, height * 0.4, 2.0 * median(word_spaces) if word_spaces else 0.0)
 
     columns = aligned_columns(items, rows, gutter)
     spanning: list[list[tuple[float, float, float, float, str]]] = []
@@ -716,6 +726,27 @@ def text_aligned_table_cells(
         columns = aligned_columns(items, rows, gutter)
     if not 2 <= len(columns) <= 12:
         return []
+    # A row run across a gutter merges the columns it crosses. When other
+    # rows still show that gutter inside the merged column, the column holds
+    # a hidden one and its rows would be read as sentences across it.
+    hidden_gap = max(gutter, height * 1.5)
+    for left, right in columns:
+        split_rows = 0
+        for row in rows:
+            inside = sorted(item for item in row if left <= (item[0] + item[2]) / 2 <= right)
+            if len(inside) < 2 or opens_item([list(item) for item in inside]):
+                continue
+            # Figures under a heading that spans their columns ("Three
+            # Months Ended" over two years) are never read as sentences.
+            if any(
+                after[0] - before[2] > hidden_gap
+                and not FIGURE_PATTERN.fullmatch(before[4])
+                and not FIGURE_PATTERN.fullmatch(after[4])
+                for before, after in zip(inside, inside[1:])
+            ):
+                split_rows += 1
+        if split_rows >= 2:
+            return []
 
     horizontal_rules = []
     for rule in rules:
@@ -734,6 +765,20 @@ def text_aligned_table_cells(
         for paragraph in spanning
     ]
     tops = sorted({item[1] for item in items} | {bounds[1] for bounds in spanning_bounds})
+
+    # Amounts count only in columns made of amounts: a glossary definition
+    # that cites "IFRS 13" beside a term is not a statement row.
+    figure_columns = []
+    for left, right in columns:
+        inside = [item for item in items if left <= (item[0] + item[2]) / 2 <= right]
+        if inside and sum(bool(FIGURE_PATTERN.fullmatch(item[4])) for item in inside) >= 0.6 * len(inside):
+            figure_columns.append((left, right))
+    figures = [
+        ((item[1] + item[3]) / 2, item[0])
+        for item in items
+        if FIGURE_PATTERN.fullmatch(item[4])
+        and any(left <= (item[0] + item[2]) / 2 <= right for left, right in figure_columns)
+    ]
 
     cells: list[tuple[float, float, float, float]] = []
     for x0, y0, _x1, y1 in spanning_bounds:
@@ -754,11 +799,21 @@ def text_aligned_table_cells(
                     continue
             lines.append([item])
 
+        statement = (left, right) not in figure_columns and any(x0 >= right for _middle, x0 in figures)
+        widest = max((max(word[2] for word in line) - left for line in lines), default=1.0)
         blocks: list[list[list[tuple[float, float, float, float, str]]]] = []
         for line in lines:
             line.sort()
             if blocks:
                 previous = blocks[-1][-1]
+                # A statement's row ends where its figures stand: a label
+                # with an amount to its right is a complete row, even when
+                # the next label sits tight under it at the same indent.
+                previous_middle = sum((word[1] + word[3]) / 2 for word in previous) / len(previous)
+                closed = any(
+                    abs(middle - previous_middle) <= height * 0.5 and x0 >= right
+                    for middle, x0 in figures
+                )
                 previous_bottom = max(word[3] for word in previous)
                 top = min(word[1] for word in line)
                 crossed = any(
@@ -772,9 +827,42 @@ def text_aligned_table_cells(
                 edge = previous[0][0]
                 if opens_item(previous) and line[0][0] - previous[0][0] > height:
                     edge = previous[1][0]
+                if len(previous) <= 3 and len(line) <= 3 and not any(
+                    FIGURE_PATTERN.fullmatch(word[4]) for word in previous + line
+                ):
+                    # A column heading in a table of amounts is set flush
+                    # right or centred ("Cash / and Cash / Equivalents",
+                    # "Fair / Value / Level"): its short lines share a right
+                    # edge or a centre, not a left edge.
+                    previous_right = max(w[2] for w in previous)
+                    # Two headings can share a merged column; compare with
+                    # the words under this one only.
+                    under = [w for w in line if w[0] < previous_right + 2.0] or line
+                    line_right = max(w[2] for w in under)
+                    previous_centre = (previous[0][0] + previous_right) / 2
+                    line_centre = (under[0][0] + line_right) / 2
+                    tolerance = max(1.5, height * 0.2)
+                    if (abs(previous_right - line_right) <= tolerance
+                            or abs(previous_centre - line_centre) <= tolerance):
+                        edge = line[0][0]
+                if statement and not closed:
+                    # Beside figures, a short line without amounts is a
+                    # caption over its rows ("Operations", "Financing"), and
+                    # a full-width one wraps into the indented line below it
+                    # ("Acquisition of companies, net of cash acquired and
+                    # divestitures," / "and purchases of intangible ...").
+                    reach = (max(word[2] for word in previous) - left) / max(1.0, widest)
+                    ends_heading = str(previous[-1][4]).endswith(":")
+                    flush_left = previous[0][0] - left <= height
+                    if flush_left and (reach < 0.6 or ends_heading):
+                        blocks.append([line])
+                        continue
+                    if 0 < line[0][0] - previous[0][0] <= 2 * height:
+                        edge = line[0][0]
                 if not (
                     top - previous_bottom > height * 0.5
                     or crossed
+                    or closed
                     or abs(line[0][0] - edge) > max(1.5, height * 0.2)
                     or line[0][4][:1] in BULLET_CHARACTERS
                     or opens_item(line)

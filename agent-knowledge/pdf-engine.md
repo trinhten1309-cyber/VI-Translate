@@ -67,6 +67,18 @@ marker, and sent Mac users off to reinstall a complete app.
   An `abandon` region is a footnote, and is translated, when `is_footnote_text`
   holds: lower half of the page, opens with a reference mark, six words or
   more, and other text below it (the running footer).
+  The gutter is measured from word spaces only (gaps no wider than a line is
+  high); a statement with four figure columns otherwise doubled its median gap
+  into a 39 pt gutter and merged every column. Columns made mostly of amounts
+  (`FIGURE_PATTERN`) are figure columns: a label beside an amount is a complete
+  row; beside figures a short flush-left line without amounts ("Operations")
+  or one ending in ":" is a caption row, and a full-width line without amounts
+  continues into the indented line under it. Short heading lines (three words
+  or fewer, no amounts) that share a right edge or centre stay one cell
+  ("Cash / and Cash / Equivalents"). A merged column that still shows a gap
+  between words on two or more rows hides a column, so the table stays
+  protected. Zebra-striped statements give `find_tables` one table per shaded
+  row; none covers half the model table, so they reach these rules.
   A ruled grid often starts at the first row of figures, below the column
   headings the model's table also holds. `table_heading_cells` gives the
   words above the grid their own cells: a run stacked on the next line of the
