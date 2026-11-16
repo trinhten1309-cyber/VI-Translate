@@ -1836,6 +1836,12 @@ class TranslateConverter(PDFConverterEx):
             for characters in var
             if characters
         )
+        # The right edge of the page's prose: a one-line heading may grow to
+        # it, never past it into the margin.
+        text_right = max(
+            (paragraph.x1 for paragraph in pstk if paragraph.layout_bound is None),
+            default=0.0,
+        )
         fit_budgets = [
             paragraph.y1 - paragraph.y0
             if paragraph.layout_bound is not None
@@ -1943,6 +1949,10 @@ class TranslateConverter(PDFConverterEx):
                     max(1, round(height / (pstk[id].size * default_line_height)))
                     if brk
                     else 1
+                )
+            if orig_lines == 1 and not brk and pstk[id].layout_bound is None and new != sstk[id]:
+                x1 = available_width_right(
+                    (x0, pstk[id].y0, x1, pstk[id].y1), obstacles, text_right
                 )
             total_avail = paragraph_width_budget(x, x0, x1, orig_lines)
             # Measure actual width of translated text (excluding formula tags)
@@ -2315,6 +2325,29 @@ def available_height_below(
             continue  # a hairline touch is a different column, not a collision
         limit = max(limit, oy1)
     return max(y1 - limit, y1 - y0)
+
+
+def available_width_right(
+    bounds: tuple[float, float, float, float],
+    obstacles: Iterable[tuple[float, float, float, float]],
+    text_right: float,
+) -> float:
+    """Return how far right a one-line paragraph may run before it hits anything.
+
+    A heading's box is the width of its source words. "Equity Method
+    Investments" became "Đầu tư theo phương pháp vốn chủ sở hữu" and was set at
+    half size inside the English width, with the rest of the line empty. A
+    single line may take the free space to its right, up to the next thing on
+    its line or the right edge of the page's prose.
+    """
+    x0, y0, x1, y1 = bounds
+    limit = max(x1, text_right)
+    for ox0, oy0, _ox1, oy1 in obstacles:
+        if oy1 <= y0 + 0.5 or oy0 >= y1 - 0.5:
+            continue  # above or below this line
+        if ox0 >= x1 - 0.5:
+            limit = min(limit, ox0 - 2.0)
+    return max(x1, limit)
 
 
 def line_offsets(

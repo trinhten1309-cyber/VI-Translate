@@ -333,6 +333,17 @@ class FinancialStatementTests(unittest.TestCase):
         self.assertIn("Cash and Cash Equivalents", texts)
         self.assertIn("Fair Value Level", texts)
 
+    def test_a_one_line_heading_takes_the_free_space_to_its_right(self):
+        from pdf2zh.converter import available_width_right
+        heading = (18, 463, 118, 474)
+        self.assertEqual(available_width_right(heading, [heading], 594), 594)
+        # Something further along the line stops it,
+        beside = (300, 460, 400, 476)
+        self.assertEqual(available_width_right(heading, [heading, beside], 594), 298)
+        # but a paragraph below it does not.
+        below = (18, 430, 594, 455)
+        self.assertEqual(available_width_right(heading, [heading, below], 594), 594)
+
     def test_a_ligature_glyph_reads_as_its_letters(self):
         from pdf2zh.converter import expand_ligature
         character = SimpleNamespace(_text="\ufb01")

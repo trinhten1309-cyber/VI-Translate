@@ -140,6 +140,10 @@ marker, and sent Mac users off to reinstall a complete app.
   opens with a heading or item number. A wrapped paragraph whose source pitch
   is 1.4 em or more keeps that leading, and the fit loop may still tighten it.
   Single-spaced documents split and lead exactly as before.
+- A translated one-line paragraph outside a table cell may run right into
+  free space up to the next thing on its line or the right edge of the page's
+  prose (`available_width_right`); its source box is only as wide as the
+  English words, and headings were set at half size beside an empty line.
 - Leading is never compressed below `min_line_height_for_language`, measured
   from real glyph ink (`vi` = 1.10 em). A paragraph short of room reduces
   leading to that floor, then borrows the clear gap below it
