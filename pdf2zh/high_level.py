@@ -40,6 +40,7 @@ from pdf2zh.rules import (
     abandon_outranked_by_text,
     is_footnote_text,
     lines_crossing_region,
+    overlapping_text_groups,
     is_scanned_page,
     matching_table_cells,
     page_has_image,
@@ -473,6 +474,21 @@ def translate_patch(
                     np.clip(int(h - y0 + 1), 0, h - 1),
                 )
                 box[y0:y1, x0:x1] = i + 2
+            # Two text boxes over the same lines are one paragraph region.
+            text_boxes = list(non_vcls_boxes)
+            for group in overlapping_text_groups(
+                [([float(value) for value in d.xyxy.squeeze()], float(d.conf)) for _i, d in text_boxes]
+            ):
+                classes = [text_boxes[index][0] + 2 for index in group]
+                bounds = [[float(value) for value in text_boxes[index][1].xyxy.squeeze()] for index in group]
+                gx0 = min(bound[0] for bound in bounds)
+                gy0 = min(bound[1] for bound in bounds)
+                gx1 = max(bound[2] for bound in bounds)
+                gy1 = max(bound[3] for bound in bounds)
+                rows = slice(np.clip(int(h - gy1 - 1), 0, h - 1), np.clip(int(h - gy0 + 1), 0, h - 1))
+                columns = slice(np.clip(int(gx0 - 1), 0, w - 1), np.clip(int(gx1 + 1), 0, w - 1))
+                patch = box[rows, columns]
+                patch[np.isin(patch, classes)] = classes[0]
             # A text box that starts or stops partway along a line takes the
             # whole line, where no other region claims it.
             page_lines = [
@@ -482,8 +498,6 @@ def translate_patch(
                 if abs(line.get("dir", (1, 0))[1]) < 0.5
             ]
             for i, d in non_vcls_boxes:
-                if page_layout.names[int(d.cls)] not in ("plain text", "title"):
-                    continue
                 for lx0, ly0, lx1, ly1 in lines_crossing_region(
                     [float(value) for value in d.xyxy.squeeze()], page_lines
                 ):

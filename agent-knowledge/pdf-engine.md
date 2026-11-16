@@ -89,7 +89,11 @@ marker, and sent Mac users off to reinstall a complete app.
   An `abandon` region within 16 pt above a model table and inside its width
   is that table's caption (`abandon_is_table_caption`) and is translated; a
   running header has other content between it and any table.
-  A "plain text" or "title" box that starts or stops partway along a line
+  Text boxes whose overlap covers 60% of the smaller one are one region
+  (`overlapping_text_groups`): the model answers a paragraph with two boxes a
+  few points apart, and the glyphs between their edges became a paragraph of
+  their own ("$1.0 billi" / "on of").
+  Any text-class box (not only "plain text" or "title") that starts or stops partway along a line
   takes the whole line where only the catch-all class holds it
   (`lines_crossing_region`): a box starting 66 pt into a 10-Q cover line cut
   "Indicate by check m|ark" into separate segments.

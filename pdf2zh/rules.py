@@ -625,6 +625,52 @@ def abandon_is_table_caption(
     return False
 
 
+def overlapping_text_groups(
+    regions: Sequence[tuple[Sequence[float], float]],
+    minimum: float = 0.6,
+) -> list[list[int]]:
+    """Text regions the model drew twice over the same lines, grouped.
+
+    The model often answers one paragraph with two "plain text" boxes a few
+    points apart (NVIDIA 10-Q note 6: x 84-578 at 0.35 and x 100-594 at 0.51).
+    Each became its own class, so the glyphs between their left edges formed a
+    paragraph of their own: "Non-marketable e" / "quity securities had ...",
+    "$1.0 billi" / "on of". Regions whose overlap covers most of the smaller
+    one are one paragraph region. Returns groups of indices, largest
+    confidence first.
+    """
+    parent = list(range(len(regions)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    boxes = [tuple(float(value) for value in bounds) for bounds, _confidence in regions]
+    for a, first in enumerate(boxes):
+        for b in range(a + 1, len(boxes)):
+            second = boxes[b]
+            width = min(first[2], second[2]) - max(first[0], second[0])
+            height = min(first[3], second[3]) - max(first[1], second[1])
+            if width <= 0 or height <= 0:
+                continue
+            smaller = min(
+                (first[2] - first[0]) * (first[3] - first[1]),
+                (second[2] - second[0]) * (second[3] - second[1]),
+            )
+            if smaller > 0 and width * height >= minimum * smaller:
+                parent[find(a)] = find(b)
+    groups: dict[int, list[int]] = {}
+    for index in range(len(regions)):
+        groups.setdefault(find(index), []).append(index)
+    return [
+        sorted(group, key=lambda index: -regions[index][1])
+        for group in groups.values()
+        if len(group) > 1
+    ]
+
+
 def lines_crossing_region(
     region: Sequence[float],
     lines: Iterable[Sequence[float]],

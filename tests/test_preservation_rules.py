@@ -11,6 +11,7 @@ from pdf2zh.rules import (
     abandon_is_table_caption,
     abandon_outranked_by_text,
     lines_crossing_region,
+    overlapping_text_groups,
     table_heading_cells,
     BULLET_CHARACTERS,
     classify_preserved_page,
@@ -340,6 +341,12 @@ class FinancialStatementTests(unittest.TestCase):
         plain = SimpleNamespace(_text="x")
         expand_ligature(plain)
         self.assertEqual(plain._text, "x")
+
+    def test_two_text_boxes_over_one_paragraph_are_one_region(self):
+        """NVIDIA 10-Q note 6: boxes at x 84-578 and 100-594 over the same lines."""
+        regions = [((100, 348, 594, 367), 0.51), ((84, 348, 578, 367), 0.35),
+                   ((18, 378, 124, 388), 0.9)]
+        self.assertEqual(overlapping_text_groups(regions), [[0, 1]])
 
     def test_a_text_reading_the_model_trusts_more_beats_abandon(self):
         note = (19, 628, 153, 640)
