@@ -37,6 +37,7 @@ from pdf2zh.rules import (
     cluster_table_words,
     formula_regions,
     abandon_is_table_caption,
+    abandon_outranked_by_text,
     is_footnote_text,
     lines_crossing_region,
     is_scanned_page,
@@ -500,6 +501,16 @@ def translate_patch(
                     raw_x0, raw_y0, raw_x1, raw_y1 = (
                         float(value) for value in d.xyxy.squeeze()
                     )
+                    if name == "abandon" and abandon_outranked_by_text(
+                        (raw_x0, raw_y0, raw_x1, raw_y1),
+                        float(d.conf),
+                        [
+                            (other.xyxy.squeeze(), float(other.conf))
+                            for other in page_layout.boxes
+                            if page_layout.names[int(other.cls)] not in vcls
+                        ],
+                    ):
+                        continue
                     if name == "abandon" and abandon_is_table_caption(
                         (raw_x0, raw_y0, raw_x1, raw_y1),
                         [

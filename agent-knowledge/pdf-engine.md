@@ -143,6 +143,13 @@ marker, and sent Mac users off to reinstall a complete app.
 - Output fonts are never subset. `raw_string` writes glyph IDs into Identity-H
   fonts, so renumbering them silently repoints every translated character.
   A glyph-stable alternative would be a fontTools subset with `retain_gids`.
+- Latin ligature glyphs (U+FB00-FB06, TeX's "fi"/"fl") read as their letters
+  (`expand_ligature`). Without it the output font's missing glyph made each a
+  formula placeholder, and the translator got "<b2></b2>ne-tuned".
+- An `abandon` box that the model also returned, with more confidence, as a
+  text class over the same area (IoU >= 0.8) is text
+  (`abandon_outranked_by_text`): protection is painted after text classes, so
+  the weaker reading used to win.
 - A paragraph takes its size from the first characters that draw ink, so an
   oversized bullet and its tab cannot set the size for a whole list item.
 - A segment with no letter outside its formula placeholders (`has_words`) - a

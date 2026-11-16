@@ -209,6 +209,24 @@ def is_outside_page(
     )
 
 
+# Latin typographic ligatures: U+FB00 ff, fi, fl, ffi, ffl, long-st, st.
+LIGATURES = {chr(code): unicodedata.normalize("NFKC", chr(code)) for code in range(0xFB00, 0xFB07)}
+
+
+def expand_ligature(character: LTChar) -> None:
+    """Give a ligature glyph the letters it stands for.
+
+    TeX papers set "fine-tuned" with the single glyph U+FB01. The output font
+    has no glyph for it, so the character was kept as a formula placeholder:
+    the translator received "<b2></b2>ne-tuned" (BERT lost 11 of 24 paragraphs
+    on its first two pages, ResNet 15 of 26). The source glyph is still drawn
+    wherever the character is replayed; only its text changes.
+    """
+    text = getattr(character, "_text", None)
+    if text in LIGATURES:
+        character._text = LIGATURES[text]
+
+
 def output_font_lacks_glyph(text: str, font: Font | None) -> bool:
     """Whether the prose font has no outline at all for this character.
 
@@ -1190,6 +1208,8 @@ class TranslateConverter(PDFConverterEx):
         line_start: LTChar | None = None
         previous_glyph: LTChar | None = None
         for child in ltpage:
+            if isinstance(child, LTChar):
+                expand_ligature(child)
             if isinstance(child, LTChar) and not is_outside_page(child, self.page_clip):
                 child.layout_class = glyph_layout_class(
                     self.layout[ltpage.pageid],

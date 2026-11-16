@@ -575,6 +575,34 @@ def table_heading_cells(
     return sorted(cells, key=lambda cell: (cell[1], cell[0]))
 
 
+def abandon_outranked_by_text(
+    bounds: Sequence[float],
+    confidence: float,
+    text_regions: Iterable[tuple[Sequence[float], float]],
+) -> bool:
+    """Whether the model also boxed this region as text, and trusted that more.
+
+    The model often returns two classes for one box. Microsoft's "Refer to
+    accompanying notes." was `table_footnote` at 0.67 and `abandon` at 0.29;
+    protection was applied after the text classes, so the weaker reading won
+    and the line stayed in English on one statement while translated on the
+    others.
+    """
+    x0, y0, x1, y1 = (float(value) for value in bounds)
+    area = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+    if area <= 0:
+        return False
+    for other, other_confidence in text_regions:
+        if other_confidence <= confidence:
+            continue
+        ox0, oy0, ox1, oy1 = (float(value) for value in other)
+        intersection = max(0.0, min(x1, ox1) - max(x0, ox0)) * max(0.0, min(y1, oy1) - max(y0, oy0))
+        union = area + max(0.0, ox1 - ox0) * max(0.0, oy1 - oy0) - intersection
+        if union > 0 and intersection / union >= 0.8:
+            return True
+    return False
+
+
 def abandon_is_table_caption(
     bounds: Sequence[float],
     tables: Iterable[Sequence[float]],

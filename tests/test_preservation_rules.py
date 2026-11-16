@@ -9,6 +9,7 @@ from pdfminer.pdfinterp import PDFResourceManager
 from pdf2zh.converter import TranslateConverter, has_words, is_translatable_segment
 from pdf2zh.rules import (
     abandon_is_table_caption,
+    abandon_outranked_by_text,
     lines_crossing_region,
     table_heading_cells,
     BULLET_CHARACTERS,
@@ -330,6 +331,21 @@ class FinancialStatementTests(unittest.TestCase):
         texts = TextAlignedTableTests._cells_text(None, cells, words)
         self.assertIn("Cash and Cash Equivalents", texts)
         self.assertIn("Fair Value Level", texts)
+
+    def test_a_ligature_glyph_reads_as_its_letters(self):
+        from pdf2zh.converter import expand_ligature
+        character = SimpleNamespace(_text="\ufb01")
+        expand_ligature(character)
+        self.assertEqual(character._text, "fi")
+        plain = SimpleNamespace(_text="x")
+        expand_ligature(plain)
+        self.assertEqual(plain._text, "x")
+
+    def test_a_text_reading_the_model_trusts_more_beats_abandon(self):
+        note = (19, 628, 153, 640)
+        self.assertTrue(abandon_outranked_by_text(note, 0.29, [((19, 628, 153, 640), 0.67)]))
+        self.assertFalse(abandon_outranked_by_text(note, 0.8, [((19, 628, 153, 640), 0.67)]))
+        self.assertFalse(abandon_outranked_by_text(note, 0.29, [((19, 500, 300, 640), 0.9)]))
 
     def test_a_statement_title_above_its_table_is_a_caption(self):
         tables = [(17, 113, 594, 317)]

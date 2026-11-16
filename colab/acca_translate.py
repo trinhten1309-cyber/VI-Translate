@@ -346,8 +346,12 @@ def extract(a):
     print(f"① Tách đoạn: {pdf.name} {('trang ' + a.pages) if a.pages else '(cả file)'}")
     seg_file = work / "segments.jsonl"
     seg_file.unlink(missing_ok=True)
+    # The build's fonts decide which characters the output can draw, and so
+    # which become formula placeholders: extract with the same fonts, or the
+    # segments the translator answered never match the ones the build asks for.
     run_repo([str(pdf), *pages, "--engine", "handoff", "--emit-segments", str(seg_file),
-              "--output-dir", str(work / "extract"), *rebuilt_args, *engine_ocr, "--overwrite"],
+              "--output-dir", str(work / "extract"), *font_args(a.style), *rebuilt_args,
+              *engine_ocr, "--overwrite"],
              hint="Nếu PDF là ảnh scan: để OCR = auto (hoặc engine) rồi chạy lại.")
     srcs = list(dict.fromkeys(json.loads(l)["src"] for l in seg_file.open(encoding="utf-8")))
     print(f"   {len(srcs)} đoạn cần dịch")
