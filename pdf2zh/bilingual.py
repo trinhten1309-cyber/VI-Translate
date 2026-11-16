@@ -198,13 +198,25 @@ def _page_links(page: pymupdf.Page) -> list[dict]:
         kind = link.get("kind")
         if kind == pymupdf.LINK_URI and link.get("uri"):
             links.append({"kind": kind, "from": pymupdf.Rect(link["from"]), "uri": link["uri"]})
-        elif kind in (pymupdf.LINK_GOTO, pymupdf.LINK_NAMED) and link.get("page", -1) >= 0:
+        elif kind in (pymupdf.LINK_GOTO, pymupdf.LINK_NAMED):
+            # A named destination can come back with its page as text and its
+            # view as "0,nan,41" (Apple's 10-Q table of contents); comparing
+            # that page with 0 ended the whole bilingual file. A page that is
+            # not a number is a link we cannot place, so it is left out.
+            try:
+                target = int(link.get("page", -1))
+            except (TypeError, ValueError):
+                continue
+            if target < 0:
+                continue
+            zoom = link.get("zoom")
+            to = link.get("to")
             links.append({
                 "kind": pymupdf.LINK_GOTO,
                 "from": pymupdf.Rect(link["from"]),
-                "page": link["page"],
-                "to": pymupdf.Point(link.get("to") or (0, 0)),
-                "zoom": link.get("zoom") or 0,
+                "page": target,
+                "to": pymupdf.Point(to) if isinstance(to, (pymupdf.Point, tuple, list)) else pymupdf.Point(0, 0),
+                "zoom": zoom if isinstance(zoom, (int, float)) else 0,
             })
     return links
 

@@ -204,3 +204,24 @@ class BilingualTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NamedLinkTests(unittest.TestCase):
+    def test_a_named_link_with_a_text_page_is_left_out(self):
+        """Apple's 10-Q: PyMuPDF gave page '4' and zoom '0,nan,41' for a named link."""
+        from types import SimpleNamespace
+
+        import pymupdf
+
+        from pdf2zh.bilingual import _page_links
+
+        links = [
+            {"kind": pymupdf.LINK_NAMED, "from": pymupdf.Rect(0, 0, 10, 10), "page": "4",
+             "zoom": "0,nan,41"},
+            {"kind": pymupdf.LINK_NAMED, "from": pymupdf.Rect(0, 0, 10, 10), "page": "x"},
+            {"kind": pymupdf.LINK_GOTO, "from": pymupdf.Rect(0, 0, 10, 10), "page": 2,
+             "to": pymupdf.Point(5, 5), "zoom": 0},
+        ]
+        result = _page_links(SimpleNamespace(get_links=lambda: links))
+        self.assertEqual([link["page"] for link in result], [4, 2])
+        self.assertEqual(result[0]["zoom"], 0)
