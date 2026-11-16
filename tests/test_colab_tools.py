@@ -268,6 +268,28 @@ class ProviderFailoverTests(unittest.TestCase):
         parsed = acca_translate.parse_json_array('```json\n[{"id": 0, "dst": "xin chào"}]\n```')
         self.assertEqual(parsed, {0: "xin chào"})
 
+    def test_outputs_keep_only_the_selected_pages(self):
+        folder = Path(tempfile.mkdtemp())
+        mono = folder / "book-vi.pdf"
+        doc = pymupdf.open()
+        for n in range(1, 6):
+            doc.new_page().insert_text((72, 72), f"page {n}")
+        doc.save(mono)
+        acca_translate.keep_selected_pages(mono, "2-3")
+        kept = pymupdf.open(mono)
+        self.assertEqual([page.get_text().strip() for page in kept], ["page 2", "page 3"])
+        kept.close()
+
+        alternating = folder / "book-vi-dual.pdf"
+        doc = pymupdf.open()
+        for n in range(1, 4):
+            for side in ("source", "vi"):
+                doc.new_page().insert_text((72, 72), f"{side} {n}")
+        doc.save(alternating)
+        acca_translate.keep_selected_pages(alternating, "2", per_page=2)
+        kept = pymupdf.open(alternating)
+        self.assertEqual([page.get_text().strip() for page in kept], ["source 2", "vi 2"])
+
     def test_bundled_fonts_are_passed_to_the_engine(self):
         args = acca_translate.font_args("Cabin")
         self.assertEqual(args[0], "--font")

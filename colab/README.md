@@ -14,7 +14,7 @@ chung + API LLM miễn phí (Gemini, Groq, OpenRouter). Không cần cài gì tr
 4. Upload PDF vào `input/` → **Runtime → Run all**.
 
 Kết quả nằm trong `output/`: `<tên>-vi.pdf` (bản dịch) và `<tên>-vi-dual.pdf`
-(song ngữ). Notebook luôn chạy code mới nhất của repo, nên khi repo được sửa,
+(song ngữ), chỉ gồm các trang đã chọn ở `PAGES` (để trống = cả file). Notebook luôn chạy code mới nhất của repo, nên khi repo được sửa,
 chỉ cần chạy lại.
 
 ## Các file
