@@ -98,6 +98,27 @@ class TextAlignedTableTests(unittest.TestCase):
              "stretched words again"],
         )
 
+    def test_list_items_start_cells_and_their_wrapped_lines_hang_under_the_text(self):
+        """IFRS 3 paragraph 5: numbered paragraphs the layout model calls a table.
+
+        Items set tight were one cell, and an item's second line, set under its
+        text rather than its marker, began a cell of its own mid-sentence."""
+        words = (
+            _words(0, 10, (10, "5"), (50, "Applying the acquisition method requires the following:"))
+            + _words(1, 20, (50, "(a)"), (80, "identifying the acquirer;"))
+            + _words(2, 30, (50, "(b)"), (80, "recognising the assets acquired, the"))
+            + _words(3, 40, (80, "liabilities assumed; and"))
+            + _words(4, 50, (10, "6"), (50, "The acquirer shall be identified."))
+        )
+        cells = text_aligned_table_cells((0, 0, 400, 70), words)
+        self.assertEqual(
+            self._cells_text(cells, words),
+            ["5", "6", "Applying the acquisition method requires the following:",
+             "(a) identifying the acquirer;",
+             "(b) recognising the assets acquired, the liabilities assumed; and",
+             "The acquirer shall be identified."],
+        )
+
     def test_text_without_a_column_gutter_stays_protected(self):
         words = (_words(0, 10, (10, "a paragraph of ordinary prose that wraps"))
                  + _words(1, 20, (10, "onto a second line of the same width")))
@@ -212,6 +233,31 @@ class PreservationRuleTests(unittest.TestCase):
         self.assertEqual(len(clusters), 2)
         self.assertIn("Maximum", clusters[0].text)
         self.assertIn("allowed", clusters[0].text)
+
+    def test_a_justified_line_stays_one_cluster(self):
+        """IFRS 3 paragraph 2(c), word boxes as PyMuPDF reads them: justification
+        stretched every space to 6.5 pt and the line came back as nine words."""
+        line = [(208.3, 212.6, "a"), (219.2, 268.0, "combination"), (274.5, 282.1, "of"),
+                (288.7, 317.3, "entities"), (323.8, 332.0, "or"), (338.5, 378.8, "businesses"),
+                (385.4, 408.4, "under"), (415.0, 449.0, "common"), (455.5, 483.3, "control")]
+        words = [(180.0, 551.0, 188.6, 561.0, "(c)", 10, 0, 0)]
+        words += [(x0, 551.0, x1, 561.0, text, 10, 1, i) for i, (x0, x1, text) in enumerate(line)]
+        words += [(208.3, 562.9, 253.8, 572.9, "(paragraphs", 10, 2, 0),
+                  (256.1, 562.9, 280.1, 572.9, "B1–B4", 10, 2, 1),
+                  (282.4, 562.9, 311.3, 572.9, "guidance).", 10, 2, 2)]
+        clusters = cluster_table_words(words, (178.0, 551.0, 486.4, 579.8))
+        self.assertEqual(
+            [cluster.text for cluster in clusters],
+            ["(c)", "a combination of entities or businesses under common control "
+                    "(paragraphs B1–B4 guidance)."],
+        )
+
+    def test_evenly_spaced_values_beside_a_label_still_split(self):
+        words = [(0, 0, 30, 10, "Revenue", 1, 0, 0)]
+        words += [(x, 0, x + 25, 10, value, 1, 0, i + 1)
+                  for i, (x, value) in enumerate(((60, "45,400"), (105, "5,100"), (150, "3,000")))]
+        clusters = cluster_table_words(words, (0, 0, 178, 12))
+        self.assertEqual([cluster.text for cluster in clusters], ["Revenue", "45,400", "5,100", "3,000"])
 
     def test_vietnamese_line_height_and_extended_bullets_are_preserved(self):
         self.assertEqual(line_height_for_language("vi"), 1.2)

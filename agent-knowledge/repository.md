@@ -28,7 +28,13 @@
   (`ocr_layer.py`: no angle classifier, a failed line is re-read on its own
   crop, vertical tabs and still-failing lines stay as pixels, bold from stroke
   width, font size from the measured ink band divided by the glyphs' own em
-  height), repainting with the dominant ring colour (bins pooled against JPEG
+  height; `ocr_check.py` corrects the Chinese model's confident misreadings
+  by rule (3O→30, lone S→$, 二→–, fullwidth punctuation; leftover CJK stays
+  pixels), compares every number with Tesseract (flag only, never chosen: it
+  confuses 3/5/8 on Cabin) and, with `--ocr-reader paddle-vl` on a GPU,
+  re-reads each line with PaddleOCR-VL at a pinned revision (used when it
+  broadly agrees with RapidOCR, numbers that differ are flagged); flagged
+  lines go to `<stem>-kiem-tra-ocr.pdf`), repainting with the dominant ring colour (bins pooled against JPEG
   tint, per-channel mode) while thin long horizontal rules are restored from
   the unpainted image, rebuild of image PDFs with an invisible OCR layer in the
   translation font (header/footer lines rebuilt only when they hold words),
@@ -37,7 +43,23 @@
   fresh preview). It drives `scripts/translate_pdf.py` through the
   handoff engine and never imports engine internals except the handoff
   placeholder validators; `tests/test_colab_tools.py` covers it and skips the
-  provider tests when `openai` is absent.
+  provider tests when `openai` is absent. `acca_translate.py` splits the run
+  into `extract` (OCR, rebuild, segment extraction) and `build` (Cabin PDF,
+  bilingual copy, publish; returns the segments left in English with a
+  reason); `openai` and `router` load only when an API is called.
+  `claude_translate.py` reuses both for translation without an API key:
+  `prepare` writes `BASE/claude/<stem>/batches/lo-NNN.txt` (`id<TAB>src`,
+  spaces collapsed, `\t`/`\n` escaped, at most 60 segments or 12,000
+  characters, headed by the glossary terms the batch uses; cached segments are
+  skipped), the translator writes `answers/*.txt` as `id<TAB>dst`, read in
+  name order so `sua-*.txt` replaces `lo-*.txt`, and `finish` rejects answers
+  with wrong tags, numbers or unknown ids (a glossary mismatch is only a
+  warning), caches accepted ones as provider `claude`, builds through `build`
+  and can render pages to 60 dpi PNGs. The workflow for a new session is
+  `.claude/skills/claude-translate/SKILL.md`. With no CSV in `BASE/glossary`,
+  `load_glossary` uses `colab/glossary/ifrs-acca.csv`; `terms_in` collapses
+  whitespace first, since justified lines arrive with doubled spaces and
+  multi-word terms never matched them.
 - `pdf2zh/`: bundled extraction, translation, preservation, and PDF rendering.
   `pdf2zh/bilingual.py` builds the opt-in bilingual copy from two finished
   PDFs.

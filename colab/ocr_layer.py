@@ -16,6 +16,7 @@ import sys
 import numpy as np
 import pymupdf as fitz
 
+import ocr_check
 from rebuild_text_layer import parse_pages
 
 MIN_SCORE = 0.85
@@ -171,9 +172,23 @@ def add_invisible_line(page, rect, text, bold=False, band=None):
     page.insert_text(origin, text, fontname=font, fontsize=size, render_mode=3, morph=(origin, stretch))
 
 
-def add_ocr_layer(input_path, output_path, pages="", dpi=200, engine=None, on_page=None):
+def line_crop(img, rect, scale):
+    """The picture of one line (RECT in points) with a little margin, for a second reader."""
+    x0, y0, x1, y1 = rect
+    pad = (y1 - y0) * 0.3
+    h, w = img.shape[:2]
+    a, b = max(0, int((x0 - pad) * scale)), max(0, int((y0 - pad) * scale))
+    return np.ascontiguousarray(img[b:min(h, int((y1 + pad) * scale) + 1), a:min(w, int((x1 + pad) * scale) + 1)])
+
+
+def add_ocr_layer(input_path, output_path, pages="", dpi=200, engine=None, on_page=None,
+                  reader=None, second=None, flags=None):
     """Write a copy of INPUT where the selected image-only pages carry an
-    invisible OCR layer. Returns the 1-based page numbers that were recognised."""
+    invisible OCR layer. Returns the 1-based page numbers that were recognised.
+
+    READER (option 2, e.g. ocr_check.PaddleVL) re-reads each line; SECOND
+    (option 1, e.g. ocr_check.Tesseract) reads the page again so numbers can be
+    compared. Lines a person should check are appended to FLAGS."""
     doc = fitz.open(input_path)
     wanted = parse_pages(pages, doc.page_count)
     targets = [i for i in sorted(wanted) if page_is_image_only(doc[i])]
@@ -187,7 +202,7 @@ def add_ocr_layer(input_path, output_path, pages="", dpi=200, engine=None, on_pa
         # Book pages are upright: the angle classifier only turns short cells
         # such as "$'000" upside down into "000.$".
         result = engine(img, use_cls=False)
-        lines, skipped = [], 0
+        found, skipped = [], 0
         for box, text, score in zip(result.boxes if result.boxes is not None else [],
                                     result.txts or [], result.scores or []):
             text = " ".join((text or "").split())
@@ -202,6 +217,29 @@ def add_ocr_layer(input_path, output_path, pages="", dpi=200, engine=None, on_pa
                 if not text or not line_fits(rect, text):
                     skipped += 1
                     continue
+            found.append((rect, text))
+        again = None
+        if reader and found:
+            try:
+                again = reader.read([line_crop(img, rect, scale) for rect, _ in found])
+            except Exception as e:  # a GPU failure must not stop the translation
+                print(f"   ⚠️  PaddleOCR-VL lỗi ở trang {i + 1} ({type(e).__name__}) → trang này dùng RapidOCR")
+        words = None
+        if second and found:
+            try:
+                words = second.words(pix.tobytes("png"), scale)
+            except Exception as e:
+                print(f"   ⚠️  Tesseract lỗi ở trang {i + 1} ({type(e).__name__}) → trang này không so số")
+        lines = []
+        for k, (rect, text) in enumerate(found):
+            text, readings, reasons = ocr_check.judge(
+                text, again[k] if again is not None else None,
+                ocr_check.words_in(words, rect) if words is not None else None)
+            if ocr_check.has_cjk(text) or not line_fits(rect, text):
+                skipped += 1  # still a Chinese character or lost letters: keep the picture
+                continue
+            if reasons and flags is not None:
+                flags.append({"page": i + 1, "rect": rect, "text": text, "readings": readings, "reasons": reasons})
             rect_px = [v * scale for v in rect]
             band = ink_band(img, rect_px)
             band = band and (band[0] / scale, band[1] / scale)
@@ -222,11 +260,20 @@ def main():
     ap.add_argument("output")
     ap.add_argument("--pages", default="")
     ap.add_argument("--dpi", type=int, default=200)
+    ap.add_argument("--check", action="store_true", help="compare numbers with Tesseract")
+    ap.add_argument("--paddle-vl", action="store_true", help="re-read every line with PaddleOCR-VL")
+    ap.add_argument("--review", help="write the lines to check to this PDF")
     a = ap.parse_args()
+    flags = []
     done = add_ocr_layer(a.input, a.output, a.pages, a.dpi,
                          on_page=lambda n, total, page, kept, skipped: print(
-                             f"OCR {n}/{total}: page {page} - {kept} lines, {skipped} left as picture"))
+                             f"OCR {n}/{total}: page {page} - {kept} lines, {skipped} left as picture"),
+                         reader=ocr_check.load_paddle_vl(allow_cpu=True) if a.paddle_vl else None,
+                         second=ocr_check.Tesseract() if a.check and ocr_check.Tesseract.available() else None,
+                         flags=flags)
     print(f"Recognised {len(done)} image-only pages" + (f": {done}" if done else ""))
+    if a.review and ocr_check.write_review(a.input, flags, a.review):
+        print(f"{len(flags)} lines to check: {a.review}")
 
 
 if __name__ == "__main__":

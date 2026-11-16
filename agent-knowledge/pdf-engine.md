@@ -46,9 +46,16 @@ marker, and sent Mac users off to reinstall a complete app.
   A model table with no grid is divided by its text alignment instead
   (`text_aligned_table_cells`): columns are white-space gutters wider than
   twice the table's own word spacing that hold text on at least two rows, and a
-  cell ends at a wider line gap, a rule, a bullet, or a change of left edge. A
-  table that does not divide that way stays protected, and a gridless cell that
-  mixes text sizes (a subscripted variable) keeps its source glyphs.
+  cell ends at a wider line gap, a rule, a bullet, a list marker that opens a
+  line ("(a)", "(iv)", "3."), or a change of left edge; a line set under the
+  text after the previous line's marker (a hanging indent) continues its item.
+  A table that does not divide that way stays protected, and a gridless cell
+  that mixes text sizes (a subscripted variable) keeps its source glyphs.
+  The layout model calls a standard's numbered paragraphs (IFRS: paragraph
+  numbers in a left column) a table, so these rules also carry prose lists.
+  `cluster_table_words` holds a justified line together (`justified_units`):
+  three or more alike spaces between words, on a line that reaches the cell's
+  right edge, are justification, not a code-column gap.
   Cells are painted into the mask from MuPDF's word boxes but read back at
   pdfminer's glyph corners, so the two must agree on where a glyph is (see
   Damaged Sources for the font that made them disagree). A grid can overlap
