@@ -453,6 +453,172 @@ def table_bounds_clear_of_text(
 FOOTNOTE_MARKER_PATTERN = re.compile(r"(?:\d{1,3}|[*\u2020\u2021\u00a7]{1,3}|\([a-z0-9]{1,2}\))")
 
 
+def table_heading_cells(
+    model_bounds: Sequence[Any],
+    grid_cells: Sequence[Sequence[Any]],
+    words: Iterable[Sequence[Any]],
+) -> list[tuple[float, float, float, float]]:
+    """Cells for a table's column headings, which its ruling grid leaves out.
+
+    A financial statement draws rules only under its figures: PyMuPDF found
+    NVIDIA's income statement grid from the first row of figures down, while
+    the model's table also held "Three Months Ended" and the dates under it,
+    so those stayed in English with every row label translated beside them.
+    The words of the model table above the grid are grouped the way
+    a heading is read: a word run stacked on the next line of the same column
+    continues it ("Accumulated Other / Comprehensive / Income"), and a run
+    that lies over two runs of another line is a spanning heading ("Three
+    Months Ended" over two dates, "Common Stock / Outstanding" over "Shares"
+    and "Amount"), so it is its own cell. Each group is one cell.
+    """
+    model = _rect(model_bounds)
+    grid = [bounds for bounds in (_rect(cell) for cell in grid_cells) if bounds is not None]
+    if model is None or not grid:
+        return []
+    mx0, my0, mx1, my1 = model
+    gy0 = min(cell[1] for cell in grid)
+    items = []
+    for word in words:
+        bounds = _rect(word)
+        if bounds is None or len(word) < 5 or not str(word[4]).strip():
+            continue
+        x0, y0, x1, y1 = bounds
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        if not (mx0 <= cx <= mx1 and my0 <= cy <= my1):
+            continue
+        # Headings stand above the figures; what follows the grid is rows
+        # the grid did not reach, and those are not headings.
+        if cy >= gy0 or y1 > gy0 + 1.0:
+            continue
+        items.append((x0, y0, x1, y1, str(word[4])))
+    if not items:
+        return []
+    height = median(item[3] - item[1] for item in items)
+    gutter = max(3.0, height * 0.6)
+
+    rows: list[list[tuple[float, float, float, float, str]]] = []
+    for item in sorted(items, key=lambda item: ((item[1] + item[3]) / 2, item[0])):
+        if rows and abs((item[1] + item[3]) / 2 - (rows[-1][0][1] + rows[-1][0][3]) / 2) <= height * 0.3:
+            rows[-1].append(item)
+        else:
+            rows.append([item])
+    runs: list[list[float]] = []  # x0, y0, x1, y1, row
+    members: list[list[tuple[float, float, float, float, str]]] = []
+    for index, row in enumerate(rows):
+        for item in sorted(row):
+            if runs and runs[-1][4] == index and item[0] < runs[-1][2] + gutter:
+                run = runs[-1]
+                run[1], run[2], run[3] = min(run[1], item[1]), max(run[2], item[2]), max(run[3], item[3])
+                members[-1].append(item)
+            else:
+                runs.append([item[0], item[1], item[2], item[3], index])
+                members.append([item])
+
+    def overlaps(a: Sequence[float], b: Sequence[float]) -> bool:
+        return a[0] < b[2] and b[0] < a[2]
+
+    def spans(run: Sequence[float], row: int) -> bool:
+        return sum(overlaps(run, other) for other in runs if other[4] == row) >= 2
+
+    parent = list(range(len(runs)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    for a, first in enumerate(runs):
+        for b, second in enumerate(runs):
+            if b <= a or first[4] == second[4] or not overlaps(first, second):
+                continue
+            upper, lower = (first, second) if first[1] < second[1] else (second, first)
+            if lower[1] - upper[3] > height * 0.6:
+                continue
+            if spans(first, int(second[4])) or spans(second, int(first[4])):
+                continue
+            parent[find(a)] = find(b)
+
+    groups: dict[int, list[int]] = {}
+    for index in range(len(runs)):
+        groups.setdefault(find(index), []).append(index)
+    boxes = []
+    for indices in groups.values():
+        boxes.append((
+            min(runs[index][0] for index in indices),
+            min(runs[index][1] for index in indices),
+            max(runs[index][2] for index in indices),
+            max(runs[index][3] for index in indices),
+        ))
+    # A heading over a narrow figure column ("Retained Earnings") has room
+    # for its translation only beside and above its words: it takes half the
+    # gap to the headings on either side, and the height of the heading band
+    # that no other heading over its column uses.
+    band_top = min(box[1] for box in boxes)
+    cells = []
+    for box in boxes:
+        x0, y0, x1, y1 = box
+        beside = [other for other in boxes
+                  if other is not box and other[1] < y1 and y0 < other[3]]
+        lefts = [(other[2] + x0) / 2 for other in beside if other[2] <= x0]
+        rights = [(x1 + other[0]) / 2 for other in beside if other[0] >= x1]
+        left = min(x0 - 1.0, max(max(lefts) if lefts else x0 - 1.0, x0 - 40.0))
+        right = max(x1 + 1.0, min(min(rights) if rights else x1 + 1.0, x1 + 40.0))
+        above = [other[3] for other in boxes
+                 if other is not box and other[3] <= y0 and other[0] < right and left < other[2]]
+        top = max(above) + 0.5 if above else band_top
+        cells.append((left, min(top, y0), right, y1))
+    return sorted(cells, key=lambda cell: (cell[1], cell[0]))
+
+
+def abandon_is_table_caption(
+    bounds: Sequence[float],
+    tables: Iterable[Sequence[float]],
+    gap: float = 16.0,
+) -> bool:
+    """Whether a region the model set aside as page furniture titles a table.
+
+    The model labelled "NVIDIA Corporation and Subsidiaries / Condensed
+    Consolidated Balance Sheets / (In millions) (Unaudited)" `abandon`, like a
+    running header, on three of the five statements of a 10-Q; the income
+    statement's identical layout was a `table_caption` and was translated. A
+    caption sits directly above its table and within its width; a running
+    header has the page's first heading or paragraph between it and any table.
+    """
+    x0, y0, x1, y1 = (float(value) for value in bounds)
+    for table in tables:
+        tx0, ty0, tx1, ty1 = (float(value) for value in table)
+        if 0.0 <= ty0 - y1 <= gap and x0 >= tx0 - 2.0 and x1 <= tx1 + 2.0:
+            return True
+    return False
+
+
+def lines_crossing_region(
+    region: Sequence[float],
+    lines: Iterable[Sequence[float]],
+) -> list[tuple[float, float, float, float]]:
+    """Lines a text region covers only in part, which it should own whole.
+
+    On the cover of NVIDIA's 10-Q the model's text box for a check-box
+    question began 66 pt into its first line, at "ark whether ...", so the
+    glyphs before it ("Indicate by check m") fell to the catch-all class and
+    became a paragraph of their own: the sentence was cut mid-word into four
+    segments. A line whose middle lies in the region's height and that shares
+    at least a third of its width with the region belongs to it.
+    """
+    rx0, ry0, rx1, ry1 = (float(value) for value in region)
+    result = []
+    for line in lines:
+        x0, y0, x1, y1 = (float(value) for value in line[:4])
+        width = x1 - x0
+        if width <= 0 or not ry0 <= (y0 + y1) / 2 <= ry1:
+            continue
+        shared = min(x1, rx1) - max(x0, rx0)
+        if shared >= width / 3 and (x0 < rx0 - 0.5 or x1 > rx1 + 0.5):
+            result.append((x0, y0, x1, y1))
+    return result
+
+
 def is_footnote_text(
     bounds: Sequence[float],
     words: Iterable[Sequence[Any]],

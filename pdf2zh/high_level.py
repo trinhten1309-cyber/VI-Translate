@@ -36,12 +36,15 @@ from pdf2zh.rules import (
     has_index_page_reference,
     cluster_table_words,
     formula_regions,
+    abandon_is_table_caption,
     is_footnote_text,
+    lines_crossing_region,
     is_scanned_page,
     matching_table_cells,
     page_has_image,
     should_translate_table_cell,
     table_bounds_clear_of_text,
+    table_heading_cells,
     text_aligned_table_cells,
     words_by_cell,
 )
@@ -469,6 +472,24 @@ def translate_patch(
                     np.clip(int(h - y0 + 1), 0, h - 1),
                 )
                 box[y0:y1, x0:x1] = i + 2
+            # A text box that starts or stops partway along a line takes the
+            # whole line, where no other region claims it.
+            page_lines = [
+                line["bbox"]
+                for block in page_blocks
+                for line in block.get("lines", [])
+                if abs(line.get("dir", (1, 0))[1]) < 0.5
+            ]
+            for i, d in non_vcls_boxes:
+                if page_layout.names[int(d.cls)] not in ("plain text", "title"):
+                    continue
+                for lx0, ly0, lx1, ly1 in lines_crossing_region(
+                    [float(value) for value in d.xyxy.squeeze()], page_lines
+                ):
+                    rows = slice(np.clip(int(h - ly1 - 1), 0, h - 1), np.clip(int(h - ly0 + 1), 0, h - 1))
+                    columns = slice(np.clip(int(lx0 - 1), 0, w - 1), np.clip(int(lx1 + 1), 0, w - 1))
+                    patch = box[rows, columns]
+                    patch[patch == 1] = i + 2
             translate_all = (pageno in scanned_pages
                              and bool(os.environ.get(TRANSLATE_ALL_SCAN_TEXT_ENV)))
             for i, d in enumerate(page_layout.boxes):
@@ -479,6 +500,15 @@ def translate_patch(
                     raw_x0, raw_y0, raw_x1, raw_y1 = (
                         float(value) for value in d.xyxy.squeeze()
                     )
+                    if name == "abandon" and abandon_is_table_caption(
+                        (raw_x0, raw_y0, raw_x1, raw_y1),
+                        [
+                            [float(value) for value in other.xyxy.squeeze()]
+                            for other in page_layout.boxes
+                            if page_layout.names[int(other.cls)] == "table"
+                        ],
+                    ):
+                        continue
                     if name == "abandon" and is_footnote_text(
                         (raw_x0, raw_y0, raw_x1, raw_y1),
                         doc_zh[page.pageno].get_text("words"),
@@ -556,6 +586,8 @@ def translate_patch(
             page_span_sizes = None
             for table_bounds in model_table_bounds:
                 cells = matching_table_cells(table_bounds, detected_tables)
+                if cells:
+                    cells = cells + table_heading_cells(table_bounds, cells, page_words)
                 aligned = False
                 if not cells:
                     # No grid to read cells from; the text alignment may still

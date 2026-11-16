@@ -8,6 +8,9 @@ from pdfminer.pdfinterp import PDFResourceManager
 
 from pdf2zh.converter import TranslateConverter, has_words, is_translatable_segment
 from pdf2zh.rules import (
+    abandon_is_table_caption,
+    lines_crossing_region,
+    table_heading_cells,
     BULLET_CHARACTERS,
     classify_preserved_page,
     cluster_table_words,
@@ -242,6 +245,67 @@ class TextAlignedTableTests(unittest.TestCase):
         self.assertFalse(is_footnote_text((111, 97, 459, 110), header + footer, 842))
         plain = _words(8, 697, (112, "Chapter 3 Business combinations and group accounts continued"))
         self.assertFalse(is_footnote_text((111, 695, 459, 714), plain + footer, 842))
+
+
+class FinancialStatementTests(unittest.TestCase):
+    """NVIDIA Form 10-Q for the quarter ended April 26, 2026, pages 1-7."""
+
+    @staticmethod
+    def _text(cells, words):
+        return [
+            " ".join(word[4] for word in words
+                     if cell[0] <= (word[0] + word[2]) / 2 <= cell[2]
+                     and cell[1] <= (word[1] + word[3]) / 2 <= cell[3])
+            for cell in cells
+        ]
+
+    def test_a_spanning_heading_and_its_dates_above_the_grid(self):
+        words = (_words(0, 173, (439, "Three Months Ended"))
+                 + _words(1, 184, (396, "Apr 26, 2026"), (514, "Apr 27, 2025"))
+                 + _words(2, 202, (18, "Revenue"), (400, "81,615")))
+        grid = [(18, 200, 364, 212), (364, 200, 593, 212)]
+        cells = table_heading_cells((16, 173, 595, 466), grid, words)
+        self.assertEqual(self._text(cells, words),
+                         ["Three Months Ended", "Apr 26, 2026", "Apr 27, 2025"])
+
+    def test_stacked_column_headings_stay_together(self):
+        words = (_words(0, 102, (277, "Common Stock"))
+                 + _words(1, 105, (425, "Accumulated Other"))
+                 + _words(2, 109, (282, "Outstanding"))
+                 + _words(3, 112, (357, "Additional"), (425, "Comprehensive"))
+                 + _words(4, 119, (268, "Shares"), (310, "Amount"), (350, "Paid-in Capital"),
+                          (440, "Income"))
+                 + _words(5, 145, (19, "Balances as of Jan 25, 2026")))
+        grid = [(19, 141, 261, 151), (261, 141, 592, 151)]
+        cells = table_heading_cells((18, 100, 594, 335), grid, words)
+        texts = self._text(cells, words)
+        self.assertIn("Common Stock Outstanding", texts)
+        self.assertIn("Additional Paid-in Capital", texts)
+        self.assertIn("Accumulated Other Comprehensive Income", texts)
+        self.assertIn("Shares", texts)
+        self.assertIn("Amount", texts)
+        self.assertNotIn("Balances as of Jan 25, 2026", " ".join(texts))
+
+    def test_a_table_without_a_grid_has_no_heading_cells(self):
+        words = _words(0, 10, (10, "Three Months Ended"))
+        self.assertEqual(table_heading_cells((0, 0, 400, 50), [], words), [])
+
+    def test_a_statement_title_above_its_table_is_a_caption(self):
+        tables = [(17, 113, 594, 317)]
+        self.assertTrue(abandon_is_table_caption((225, 63, 387, 102), tables))
+        # A running header with the page's first heading between it and the table.
+        self.assertFalse(abandon_is_table_caption((196, 22, 415, 52), tables))
+        # Wider than the table: not its caption.
+        self.assertFalse(abandon_is_table_caption((5, 63, 600, 102), tables))
+
+    def test_a_text_box_that_starts_partway_along_a_line_takes_the_line(self):
+        lines = [(18, 452, 589, 460), (18, 461, 589, 468), (18, 400, 574, 408)]
+        self.assertEqual(
+            lines_crossing_region((84, 454, 578, 472), lines),
+            [(18, 452, 589, 460), (18, 461, 589, 468)],
+        )
+        # A line beside the region in another column is not taken.
+        self.assertEqual(lines_crossing_region((300, 0, 590, 50), [(18, 10, 280, 18)]), [])
 
 
 class PreservationRuleTests(unittest.TestCase):

@@ -67,6 +67,20 @@ marker, and sent Mac users off to reinstall a complete app.
   An `abandon` region is a footnote, and is translated, when `is_footnote_text`
   holds: lower half of the page, opens with a reference mark, six words or
   more, and other text below it (the running footer).
+  A ruled grid often starts at the first row of figures, below the column
+  headings the model's table also holds. `table_heading_cells` gives the
+  words above the grid their own cells: a run stacked on the next line of the
+  same column continues it, a run lying over two runs of another line is a
+  spanning heading ("Three Months Ended"), and each cell widens to half the
+  gap beside it and up through the free heading band so its translation fits.
+  Words below the grid are not headings and are left alone.
+  An `abandon` region within 16 pt above a model table and inside its width
+  is that table's caption (`abandon_is_table_caption`) and is translated; a
+  running header has other content between it and any table.
+  A "plain text" or "title" box that starts or stops partway along a line
+  takes the whole line where only the catch-all class holds it
+  (`lines_crossing_region`): a box starting 66 pt into a 10-Q cover line cut
+  "Indicate by check m|ark" into separate segments.
   `cluster_table_words` holds a justified line together (`justified_units`):
   three or more alike spaces between words, on a line that reaches the cell's
   right edge, are justification, not a code-column gap.
