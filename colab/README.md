@@ -21,6 +21,14 @@ nhận dạng được đều được dịch, kể cả tiêu đề trong khung
 bảng dùng cùng font với bản dịch. Notebook luôn chạy code mới nhất của repo,
 nên khi repo được sửa, chỉ cần chạy lại.
 
+Với PDF scan, mọi số được đọc hai lần (`OCR_CHECK`, bật sẵn): RapidOCR và
+Tesseract. Số nào hai bộ đọc ra khác nhau, hoặc sai định dạng (thiếu ngoặc,
+`45.400` thay vì `45,400`), được liệt kê trong `<tên>-kiem-tra-ocr.pdf`: khung
+đỏ đánh số trên trang gốc, bên phải là cách đọc của từng bộ đọc. Không có bộ
+đọc nào tự sửa số hộ — người xem quyết định. `OCR_READER = paddle-vl` cho
+PaddleOCR-VL đọc lại từng dòng (chính xác hơn RapidOCR, cần **Runtime → Change
+runtime type → T4 GPU**; không có GPU thì tự quay về RapidOCR).
+
 ## Các file
 
 | File | Vai trò |
@@ -30,6 +38,7 @@ nên khi repo được sửa, chỉ cần chạy lại.
 | `router.py` | Tự chuyển nguồn API khi hết lượt ngày, chờ khi bị giới hạn theo phút |
 | `handoff_tools.py` | Kiểm tra bản dịch: thẻ `<bN>`/`<sN>`, số liệu, thuật ngữ |
 | `ocr_layer.py` | Trang chỉ có ảnh (scan) → nhận dạng chữ bằng RapidOCR thành lớp chữ ẩn; dòng không chắc chắn giữ nguyên ảnh |
+| `ocr_check.py` | Sửa lỗi đọc quen thuộc (3O→30, S→$, 二→–), so số với Tesseract, PaddleOCR-VL đọc lại (GPU), file kiểm tra số |
 | `rebuild_text_layer.py` | PDF dạng ảnh có lớp chữ OCR ẩn → xoá chữ trong ảnh, dựng lại chữ thật |
 | `fonts/` | Font Cabin (SIL OFL 1.1, xem `fonts/OFL.txt`), thường và SemiCondensed |
 | `make_cabin.py` | Dựng lại `fonts/` từ bản variable font của Google Fonts |

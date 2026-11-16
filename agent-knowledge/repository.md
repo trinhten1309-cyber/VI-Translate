@@ -28,7 +28,13 @@
   (`ocr_layer.py`: no angle classifier, a failed line is re-read on its own
   crop, vertical tabs and still-failing lines stay as pixels, bold from stroke
   width, font size from the measured ink band divided by the glyphs' own em
-  height), repainting with the dominant ring colour (bins pooled against JPEG
+  height; `ocr_check.py` corrects the Chinese model's confident misreadings
+  by rule (3O→30, lone S→$, 二→–, fullwidth punctuation; leftover CJK stays
+  pixels), compares every number with Tesseract (flag only, never chosen: it
+  confuses 3/5/8 on Cabin) and, with `--ocr-reader paddle-vl` on a GPU,
+  re-reads each line with PaddleOCR-VL at a pinned revision (used when it
+  broadly agrees with RapidOCR, numbers that differ are flagged); flagged
+  lines go to `<stem>-kiem-tra-ocr.pdf`), repainting with the dominant ring colour (bins pooled against JPEG
   tint, per-channel mode) while thin long horizontal rules are restored from
   the unpainted image, rebuild of image PDFs with an invisible OCR layer in the
   translation font (header/footer lines rebuilt only when they hold words),

@@ -28,6 +28,7 @@ from openai import OpenAI  # noqa: E402
 from router import Router  # noqa: E402
 from handoff_tools import terms_in, check  # noqa: E402
 import rebuild_text_layer as rtl  # noqa: E402
+import ocr_check  # noqa: E402
 import ocr_layer  # noqa: E402
 
 PROVIDERS = {  # name: (base url, default model)
@@ -265,6 +266,25 @@ def load_cache(path):
     return cache
 
 
+def ocr_readers(a):
+    """(reader, second, flags) for ocr_layer.add_ocr_layer from the run options.
+    Option 1 (--ocr-check on): Tesseract re-reads every number. Option 2
+    (--ocr-reader paddle-vl): PaddleOCR-VL re-reads every line on the GPU;
+    without a GPU the run continues with option 1 alone."""
+    reader = second = None
+    if a.ocr_reader == "paddle-vl":
+        print("   Tải PaddleOCR-VL (lần đầu mỗi phiên khoảng 1–2 phút)...")
+        reader = ocr_check.load_paddle_vl()
+        if reader:
+            print(f"   ✓ PaddleOCR-VL đọc lại từng dòng ({reader.device})")
+    if a.ocr_check == "on":
+        if ocr_check.Tesseract.available():
+            second = ocr_check.Tesseract()
+        else:
+            print("   ⚠️  Chưa cài tesseract (chạy lại ô cài đặt) → bỏ qua bước so số với bộ đọc thứ hai")
+    return reader, second, []
+
+
 def cmd_run(a):
     base, pdf = Path(a.base), Path(a.pdf)
     work = (Path("/content/work") if Path("/content").is_dir() else REPO / "tmp" / "colab-work") / pdf.stem
@@ -275,16 +295,24 @@ def cmd_run(a):
     # PDF dạng ảnh: (a) trang chỉ có ảnh -> nhận dạng chữ (OCR) thành lớp chữ ẩn;
     # (b) trang có lớp chữ ẩn -> xoá chữ trong ảnh, dựng lại thành chữ thật.
     source, rebuilt, engine_ocr = original, [], []
+    ocr_review = work / f"{pdf.stem}-kiem-tra-ocr.pdf"
+    ocr_review.unlink(missing_ok=True)
     if a.ocr == "auto":
         scans = ocr_layer.image_only_pages(original, a.pages)
         if scans:
             print(f"⓪ {len(scans)} trang chỉ có ảnh (scan) → nhận dạng chữ OCR, mỗi trang vài giây...")
+            reader, second, flags = ocr_readers(a)
             source = work / f"{pdf.stem}-ocr.pdf"
             ocr_layer.add_ocr_layer(
-                original, source, a.pages,
+                original, source, a.pages, reader=reader, second=second, flags=flags,
                 on_page=lambda n, total, page, kept, skipped: print(
                     f"   OCR {n}/{total}: trang {page} — {kept} dòng"
                     + (f", {skipped} dòng nhận dạng không chắc nên giữ nguyên ảnh" if skipped else "")))
+            if ocr_check.write_review(original, flags, ocr_review):
+                print(f"   ⚠️  {len(flags)} dòng có số cần xem lại (hai bộ đọc khác nhau hoặc sai định dạng)"
+                      f" → output/{ocr_review.name}")
+            elif second or reader:
+                print("   ✓ Các bộ đọc khớp nhau ở mọi số")
     elif a.ocr == "engine":
         engine_ocr = ["--ocr", "standard"]
     if a.image_pdf != "off" or source != original:
@@ -380,8 +408,8 @@ def cmd_run(a):
         with review.open("w", encoding="utf-8") as f:
             for r in failures:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    replaced = publish([p for p in (mono, dual, review) if p.exists()], out_dir,
-                       stale=[out_dir / review.name])
+    replaced = publish([p for p in (mono, dual, review, ocr_review) if p.exists()], out_dir,
+                       stale=[out_dir / review.name, out_dir / ocr_review.name])
     print(f"   Translated PDF: output/{mono.name}")
     if dual.exists():
         print(f"   Bilingual PDF ({a.bilingual}{', trang gốc thật' if own_dual else ''}): output/{dual.name}")
@@ -391,6 +419,8 @@ def cmd_run(a):
         print(f"   Đã thay {replaced} file cũ cùng tên (file cũ nằm trong Thùng rác của Google Drive)")
     if failures:
         print(f"   {len(failures)} đoạn không qua kiểm tra → output/{review.name}")
+    if ocr_review.exists():
+        print(f"   Số cần xem lại trên bản scan: output/{ocr_review.name}")
 
     n_missing = sum(1 for _ in missing.open(encoding="utf-8")) if missing.exists() else 0
     print(f"\n{'✅' if not n_missing else '⚠️ '} Xong: {len(srcs) - n_missing}/{len(srcs)} đoạn đã dịch."
@@ -433,6 +463,10 @@ def main():
                         "engine: OCR thận trọng của repo (chỉ đoạn văn); off: tắt")
     r.add_argument("--image-pdf", default="auto", choices=["auto", "off"],
                    help="auto: tự dựng lại lớp chữ cho PDF dạng ảnh có OCR ẩn")
+    r.add_argument("--ocr-check", default="on", choices=["on", "off"],
+                   help="on: so mọi số với bộ đọc thứ hai (Tesseract), số khác nhau được liệt kê để xem lại")
+    r.add_argument("--ocr-reader", default="rapid", choices=["rapid", "paddle-vl"],
+                   help="paddle-vl: PaddleOCR-VL đọc lại từng dòng (cần GPU, chính xác hơn)")
     a = ap.parse_args()
     {"test": cmd_test, "run": cmd_run}[a.cmd](a)
 
