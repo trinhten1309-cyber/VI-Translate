@@ -15,6 +15,7 @@ COLAB = Path(__file__).resolve().parents[1] / "colab"
 sys.path.insert(0, str(COLAB))
 
 import handoff_tools  # noqa: E402
+import ocr_check  # noqa: E402
 import ocr_layer  # noqa: E402
 import rebuild_text_layer  # noqa: E402
 
@@ -241,6 +242,114 @@ class OcrLayerTests(unittest.TestCase):
         target = self.dir / "scan-ocr.pdf"
         self.assertEqual(ocr_layer.add_ocr_layer(source, target), [1])
         self.assertIn("capital", pymupdf.open(target)[0].get_text())
+
+
+class FakeSecondReader:
+    """Stands in for Tesseract: fixed words with boxes in points."""
+
+    def __init__(self, words):
+        self.words_ = words
+
+    def words(self, png, _scale):
+        assert png.startswith(b"\x89PNG")
+        return self.words_
+
+
+class FakeLineReader:
+    """Stands in for PaddleOCR-VL: answers by line order."""
+
+    def __init__(self, texts):
+        self.texts, self.crops = texts, []
+
+    def read(self, crops):
+        self.crops = crops
+        return self.texts[:len(crops)]
+
+
+class OcrCheckTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+
+    def test_known_misreadings_of_the_chinese_model_are_corrected(self):
+        # Seen on the BPP kit and the benchmark pages; RapidOCR's score stays high on all of them.
+        fixes = {
+            "STATEMENTS OF FINANCIAL POSITION AS AT 3O SEPTEMBER 20X8":
+                "STATEMENTS OF FINANCIAL POSITION AS AT 30 SEPTEMBER 20X8",
+            "On 1 October 2OX7, Strata Co": "On 1 October 20X7, Strata Co",
+            "(Total = 2O marks)": "(Total = 20 marks)",
+            "1,5OO": "1,500",
+            "二": "–",
+            "S": "$",
+            "$000": "$'000",
+            "（1,600）": "(1,600)",
+        }
+        for read, right in fixes.items():
+            self.assertEqual(ocr_check.clean_text(read), right)
+        for text in ("McIlroy Co acquired 80% of IAS 36", "Co", "Total assets", "(5) There were no losses",
+                     "Sophistic Co's net assets", "$'000"):
+            self.assertEqual(ocr_check.clean_text(text), text)
+
+    def test_badly_formed_numbers_are_reported(self):
+        for bad in ("45,40", "(1,600", "45.400", "1,6000"):
+            self.assertTrue(ocr_check.number_problem(bad), bad)
+        for good in ("1,600", "(3,100)", "$'000", "45,400", "–", "Profit for the year ended 30 September 20X8",
+                     "Dividend of $1.76 per share", "(27 mins)", "$1,500,000"):
+            self.assertIsNone(ocr_check.number_problem(good), good)
+
+    def test_a_number_tesseract_reads_differently_is_flagged_but_never_chosen(self):
+        text, readings, reasons = ocr_check.judge("(3,100)", tess="_ (8,100)")
+        self.assertEqual(text, "(3,100)")
+        self.assertEqual(readings["Tesseract"], "_ (8,100)")
+        self.assertTrue(reasons)
+        self.assertEqual(ocr_check.judge("4,700", tess="_ 4,700")[2], [])   # same number, stray underline mark
+        self.assertEqual(ocr_check.judge("BPP", tess="pp")[2], [])          # words are not compared
+        self.assertEqual(ocr_check.judge("5,100", tess="")[2], [])          # Tesseract saw nothing
+
+    def test_paddle_vl_text_is_used_when_it_agrees_and_checked_against_rapidocr(self):
+        self.assertEqual(ocr_check.judge("$000", vl="$'000")[:3:2], ("$'000", []))
+        text, _, reasons = ocr_check.judge("5,100", vl="5,700")
+        self.assertEqual(text, "5,700")
+        self.assertTrue(reasons)
+        # An unrelated answer (a hallucination) keeps RapidOCR's text and is flagged.
+        text, _, reasons = ocr_check.judge("Revenue", vl="The quick brown fox")
+        self.assertEqual(text, "Revenue")
+        self.assertTrue(reasons)
+        # Two readers agreeing outvote Tesseract.
+        self.assertEqual(ocr_check.judge("5,100", vl="5,100", tess="8,100")[2], [])
+
+    def test_ocr_layer_uses_both_readers_and_lists_the_lines_to_check(self):
+        source = self.dir / "scan.pdf"
+        scale = pure_scan_pdf(source, ["Revenue 5,100", "AS AT 30 JUNE", "(3,100)", "Spieth"])
+        engine = FakeOcr([
+            (pixel_box(30, 46, 160, 64, scale), "Revenue 5,100", 0.99),
+            (pixel_box(30, 86, 165, 104, scale), "AS AT 3O JUNE", 0.99),
+            (pixel_box(30, 126, 90, 144, scale), "(3,100)", 0.99),
+            (pixel_box(30, 166, 90, 184, scale), "收入", 0.99),          # Chinese characters: stays picture
+        ])
+        second = FakeSecondReader([("Revenue", (30, 46, 95, 64)), ("5,100", (110, 46, 160, 64)),
+                                   ("(8,100)", (30, 126, 90, 144))])
+        flags = []
+        target = self.dir / "scan-ocr.pdf"
+        ocr_layer.add_ocr_layer(source, target, engine=engine, second=second, flags=flags)
+        self.assertEqual(pymupdf.open(target)[0].get_text().split(),
+                         ["Revenue", "5,100", "AS", "AT", "30", "JUNE", "(3,100)"])
+        self.assertEqual([f["text"] for f in flags], ["(3,100)"])
+        self.assertEqual(flags[0]["page"], 1)
+
+        review = self.dir / "review.pdf"
+        self.assertEqual(ocr_check.write_review(source, flags, review), 1)
+        page = pymupdf.open(review)[0]
+        self.assertGreater(page.rect.width, 400)              # the readings sit beside the page
+        self.assertIn("(8,100)", page.get_text())
+        self.assertFalse(ocr_check.write_review(source, [], self.dir / "none.pdf"))
+        self.assertFalse((self.dir / "none.pdf").exists())
+
+        reader = FakeLineReader(["Revenue 5,100", "AS AT 30 JUNE", "(3,100)", "收入"])
+        flags = []
+        ocr_layer.add_ocr_layer(source, self.dir / "vl.pdf", engine=engine, reader=reader, flags=flags)
+        self.assertEqual(len(reader.crops), 3)                # the Chinese line never reaches it
+        self.assertTrue(all(c.ndim == 3 and c.size for c in reader.crops))
+        self.assertEqual(flags, [])
 
 
 class HandoffCheckTests(unittest.TestCase):
