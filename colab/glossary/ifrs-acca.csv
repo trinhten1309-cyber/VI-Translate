@@ -1,0 +1,49 @@
+en,vi,mon,keep_en,ghi_chu
+business combination,hợp nhất kinh doanh,chung,0,IFRS 3; câu đầy đủ thường viết "giao dịch hợp nhất kinh doanh"
+business,hoạt động kinh doanh,chung,0,IFRS 3 Phụ lục A (định nghĩa)
+acquirer,bên mua,chung,0,IFRS 3
+acquiree,bên bị mua,chung,0,IFRS 3
+acquisition date,ngày mua,chung,0,IFRS 3
+acquisition method,phương pháp mua,chung,0,IFRS 3
+acquisition-date fair value,giá trị hợp lý tại ngày mua,chung,0,IFRS 3
+reverse acquisition,mua ngược,chung,0,IFRS 3 B19–B27
+bargain purchase,mua giá rẻ,chung,0,"IFRS 3; ""gain from a bargain purchase"" = khoản lãi từ giao dịch mua giá rẻ"
+goodwill,lợi thế thương mại,chung,0,
+negative goodwill,lợi thế thương mại âm,chung,0,IFRS 3 C4
+non-controlling interest,lợi ích cổ đông không kiểm soát,chung,0,viết tắt NCI giữ nguyên
+previously held equity interest,lợi ích vốn chủ sở hữu nắm giữ trước đây,chung,0,IFRS 3 đoạn 32
+equity interest,lợi ích vốn chủ sở hữu,chung,0,
+consideration transferred,khoản thanh toán chuyển giao,chung,0,IFRS 3 đoạn 37
+contingent consideration,khoản thanh toán tiềm tàng,chung,0,
+contingent liability,nợ tiềm tàng,chung,0,
+contingent liabilities,nợ tiềm tàng,chung,0,số nhiều (bảng chỉ tự nhận đuôi -s)
+liability,nợ phải trả,chung,0,
+liabilities,nợ phải trả,chung,0,"""liabilities assumed"" = các khoản nợ phải trả đã gánh chịu"
+identifiable,có thể xác định được,chung,0,
+intangible asset,tài sản vô hình,chung,0,IAS 38
+fair value through profit or loss,giá trị hợp lý thông qua lãi lỗ,chung,0,
+fair value,giá trị hợp lý,chung,0,IFRS 13
+profit or loss,lãi hoặc lỗ,chung,0,
+carrying amount,giá trị ghi sổ,chung,0,
+impairment,suy giảm giá trị,chung,0,IAS 36
+cash-generating unit,đơn vị tạo tiền,chung,0,IAS 36
+common control,kiểm soát chung,chung,0,"""under common control"" = dưới sự kiểm soát chung"
+control,quyền kiểm soát,chung,0,IFRS 10
+joint arrangement,thỏa thuận liên doanh,chung,0,IFRS 11
+subsidiary,công ty con,chung,0,
+subsidiaries,công ty con,chung,0,số nhiều
+investment entity,đơn vị đầu tư,chung,0,IFRS 10
+investment entities,đơn vị đầu tư,chung,0,số nhiều
+mutual entity,đơn vị tương hỗ,chung,0,IFRS 3 Phụ lục A
+mutual entities,đơn vị tương hỗ,chung,0,số nhiều
+reporting entity,đơn vị báo cáo,chung,0,
+consolidated financial statements,báo cáo tài chính hợp nhất,chung,0,IFRS 10
+financial statements,báo cáo tài chính,chung,0,
+measurement period,thời kỳ đo lường,chung,0,IFRS 3 đoạn 45
+conceptual framework,Khuôn khổ khái niệm,chung,0,
+deferred tax,thuế hoãn lại,chung,0,IAS 12
+net assets,tài sản thuần,chung,0,
+IFRS,IFRS,chung,1,tên chuẩn mực giữ nguyên
+IAS,IAS,chung,1,tên chuẩn mực giữ nguyên
+NCI,NCI,chung,1,viết tắt giữ nguyên
+PUP,PUP,chung,1,lợi nhuận chưa thực hiện; viết tắt giữ nguyên

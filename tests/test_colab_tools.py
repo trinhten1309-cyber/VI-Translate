@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import numpy as np
@@ -378,6 +380,103 @@ class HandoffCheckTests(unittest.TestCase):
         self.assertIn("placeholders", joined)
         self.assertIn("5,200,000", joined)
         self.assertIn("lợi ích cổ đông không kiểm soát", joined)
+
+
+class ClaudeTranslateTests(unittest.TestCase):
+    """Translating from batch files: the translator writes only id<TAB>dst."""
+
+    glossary = [{"en": "goodwill", "vi": "lợi thế thương mại", "keep_en": "0"}]
+
+    @classmethod
+    def setUpClass(cls):
+        global claude_translate
+        import claude_translate  # noqa: F401
+
+    def test_answers_join_by_id_and_a_later_file_replaces_an_earlier_answer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            (folder / "lo-001.txt").write_text("# a comment\n1\tmột\n2\thai cũ\nno tab here\n", encoding="utf-8")
+            (folder / "sua-1.txt").write_text("2\thai mới\n3\tdòng\\nhai\n", encoding="utf-8")
+            answers, bad = claude_translate.read_answers(folder)
+        self.assertEqual(answers, {1: "một", 2: "hai mới", 3: "dòng\nhai"})
+        self.assertEqual([(name, n) for name, n, _ in bad], [("lo-001.txt", 4)])
+
+    def test_tags_numbers_and_unknown_ids_are_errors_terms_only_warnings(self):
+        segments = {1: "Goodwill is <s1>tested</s1> for $5,200,000", 2: "Goodwill arises", 3: "Plain text"}
+        answers = {1: "Được <s1>kiểm tra với $5.200.000", 2: "Phát sinh lợi thế", 3: "Văn bản", 9: "lạ"}
+        accepted, errors, warnings = claude_translate.judge(segments, answers, self.glossary)
+        self.assertEqual(sorted(accepted), [2, 3])
+        self.assertEqual(sorted(errors), [1, 9])
+        joined = " ".join(errors[1])
+        self.assertIn("thẻ", joined)
+        self.assertIn("5,200,000", joined)
+        self.assertIn("lợi thế thương mại", warnings[2][0])
+
+    def test_batches_hold_compact_lines_and_only_the_terms_they_use(self):
+        items = [(1, "Goodwill  is   tested\tannually"), (2, "Line one\nline two")] + [
+            (n, "word " * 10) for n in range(3, 8)]
+        batches = claude_translate.make_batches(items, size=3, chars=10_000)
+        self.assertEqual([[i for i, _ in b] for b in batches], [[1, 2, 3], [4, 5, 6], [7]])
+        # 1 and 2 share a batch; each 49-character line then fills one alone.
+        by_chars = claude_translate.make_batches(items, size=60, chars=60)
+        self.assertEqual([[i for i, _ in b] for b in by_chars], [[1, 2], [3], [4], [5], [6], [7]])
+        text = claude_translate.batch_text(1, 3, batches[0], self.glossary)
+        self.assertIn("goodwill = lợi thế thương mại", text)
+        self.assertIn("1\tGoodwill is tested\\tannually\n", text)
+        self.assertIn("2\tLine one\\nline two\n", text)
+        self.assertNotIn("goodwill", claude_translate.batch_text(3, 3, batches[2], self.glossary))
+        self.assertEqual(claude_translate.unescape("a\\tb\\nc\\\\n"), "a\tb\nc\\n")
+
+    def test_finish_again_after_fixing_one_batch_keeps_the_others(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base, job = Path(tmp) / "base", Path(tmp) / "base" / "claude" / "book"
+            (job / "answers").mkdir(parents=True)
+            (base / "glossary").mkdir()
+            (base / "glossary" / "g.csv").write_text("en,vi\ngoodwill,lợi thế thương mại\n", encoding="utf-8")
+            sources = {1: "Revenue was 4,600", 2: "Goodwill <s1>arises</s1>", 3: "Costs were 300"}
+            with (job / "segments.jsonl").open("w", encoding="utf-8") as f:
+                for i, s in sources.items():
+                    f.write(json.dumps({"id": i, "src": s}) + "\n")
+            (job / "state.json").write_text(json.dumps({
+                "base": str(base), "mon": "", "batches": [[1, 2], [3]], "pages": "",
+                "original": "x.pdf", "pdf": "x.pdf"}), encoding="utf-8")
+            (job / "answers" / "lo-001.txt").write_text(
+                "1\tDoanh thu là 4,600\n2\tLợi thế thương mại <s1>phát sinh\n", encoding="utf-8")
+            (job / "answers" / "lo-002.txt").write_text("3\tChi phí là 300\n", encoding="utf-8")
+
+            built = []
+            original_build = claude_translate.at.build
+            claude_translate.at.build = lambda state, out, tr, failures: (
+                built.append((dict(tr), [r["id"] for r in failures])) or {})
+            try:
+                with unittest.mock.patch("sys.stdout"):
+                    claude_translate.main(["finish", "--job", str(job)])
+                    # Only the broken answer is rewritten, in a fix file.
+                    (job / "answers" / "sua-1.txt").write_text(
+                        "2\tLợi thế thương mại <s1>phát sinh</s1>\n", encoding="utf-8")
+                    claude_translate.main(["finish", "--job", str(job)])
+            finally:
+                claude_translate.at.build = original_build
+
+            first, second = built
+            self.assertEqual(set(first[0]), {sources[1], sources[3]})
+            self.assertEqual(first[1], [2])
+            self.assertEqual(set(second[0]), set(sources.values()))
+            self.assertEqual(second[1], [])
+            cached = (base / "cache" / "translations_cache.jsonl").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(cached), 3)  # accepted answers are cached once each
+            self.assertTrue(all(json.loads(line)["provider"] == "claude" for line in cached))
+
+    def test_the_bundled_glossary_is_used_when_the_drive_has_none(self):
+        import acca_translate
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = acca_translate.load_glossary(tmp)
+        terms = {row["en"]: row["vi"] for row in rows}
+        self.assertEqual(terms["goodwill"], "lợi thế thương mại")
+        self.assertEqual(terms["non-controlling interest"], "lợi ích cổ đông không kiểm soát")
+        found = handoff_tools.terms_in("the  business  combination  under  common  control", rows)
+        self.assertEqual([row["en"] for row in found], ["business combination", "common control"])
 
 
 @unittest.skipUnless(HAS_OPENAI, "openai is installed only for the Colab workflow")

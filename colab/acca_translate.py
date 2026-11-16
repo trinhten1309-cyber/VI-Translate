@@ -24,8 +24,6 @@ FONTS = TOOLS / "fonts"
 FONT_STYLES = ("Cabin", "CabinSemiCondensed", "default")
 sys.path[:0] = [str(TOOLS), str(REPO)]
 
-from openai import OpenAI  # noqa: E402
-from router import Router  # noqa: E402
 from handoff_tools import terms_in, check  # noqa: E402
 import rebuild_text_layer as rtl  # noqa: E402
 import ocr_check  # noqa: E402
@@ -55,6 +53,9 @@ QUY TẮC BẮT BUỘC
 
 # ---------------------------------------------------------------- providers
 def build_router():
+    from openai import OpenAI
+    from router import Router
+
     order = [n.strip() for n in os.environ.get("PROVIDER_ORDER", ",".join(PROVIDERS)).split(",") if n.strip()]
     providers = []
     for name in order:
@@ -80,9 +81,16 @@ def build_router():
 
 
 # ---------------------------------------------------------------- glossary
+DEFAULT_GLOSSARY = TOOLS / "glossary"
+
+
 def load_glossary(folder, mon=""):
+    """Rows of every CSV in FOLDER; with none there, the bundled IFRS/ACCA list."""
+    files = sorted(Path(folder).glob("*.csv"))
+    if not files:
+        files = sorted(DEFAULT_GLOSSARY.glob("*.csv"))
     rows = []
-    for path in sorted(Path(folder).glob("*.csv")):
+    for path in files:
         with open(path, encoding="utf-8-sig") as f:
             for r in csv.DictReader(f):
                 r = {k.strip().lower(): (v or "").strip() for k, v in r.items() if k}
@@ -285,9 +293,16 @@ def ocr_readers(a):
     return reader, second, []
 
 
-def cmd_run(a):
-    base, pdf = Path(a.base), Path(a.pdf)
-    work = (Path("/content/work") if Path("/content").is_dir() else REPO / "tmp" / "colab-work") / pdf.stem
+def work_dir(pdf):
+    return (Path("/content/work") if Path("/content").is_dir() else REPO / "tmp" / "colab-work") / pdf.stem
+
+
+def extract(a):
+    """Every step before translation: OCR for image-only pages, rebuild of image
+    PDFs with a hidden text layer, then the engine's segment extraction.
+    Returns the state build() needs, with the unique segments under "srcs"."""
+    pdf = Path(a.pdf)
+    work = work_dir(pdf)
     work.mkdir(parents=True, exist_ok=True)
     pages = ["--pages", a.pages] if a.pages else []
     original = pdf
@@ -336,12 +351,90 @@ def cmd_run(a):
              hint="Nếu PDF là ảnh scan: để OCR = auto (hoặc engine) rồi chạy lại.")
     srcs = list(dict.fromkeys(json.loads(l)["src"] for l in seg_file.open(encoding="utf-8")))
     print(f"   {len(srcs)} đoạn cần dịch")
+    return {"work": str(work), "original": str(original), "pdf": str(pdf), "pages": a.pages,
+            "rebuilt": bool(rebuilt), "rebuilt_args": rebuilt_args, "engine_ocr": engine_ocr,
+            "ocr_review": str(ocr_review), "style": a.style, "bilingual": a.bilingual, "srcs": srcs}
+
+
+def build(state, out_dir, translations, failures=()):
+    """Render the translated and bilingual PDFs from TRANSLATIONS ({src: dst})
+    and publish them, with the review files, into OUT_DIR.
+    Returns {src: reason} for the segments still in English."""
+    work, original, pdf = Path(state["work"]), Path(state["original"]), Path(state["pdf"])
+    pages_opt, bilingual = state["pages"], state["bilingual"]
+    pages = ["--pages", pages_opt] if pages_opt else []
+    ocr_review = Path(state["ocr_review"])
+    srcs = state["srcs"]
+
+    tr_file = work / "translations.jsonl"
+    with tr_file.open("w", encoding="utf-8") as f:
+        for s in srcs:
+            if s in translations:
+                f.write(json.dumps({"src": s, "dst": translations[s]}, ensure_ascii=False) + "\n")
+    # Build everything in the work folder first, then publish each file once (see publish).
+    stage = work / "output"
+    shutil.rmtree(stage, ignore_errors=True)
+    stage.mkdir(parents=True)
+    missing = work / "still-missing.jsonl"
+    missing.unlink(missing_ok=True)
+    own_dual = state["rebuilt"] and bilingual in ("side-by-side", "alternating")
+    bil = [] if bilingual == "off" or own_dual else ["--bilingual", bilingual]
+    extra = font_args(state["style"]) + state["rebuilt_args"] + state["engine_ocr"]
+    lines = run_repo([str(pdf), *pages, "--engine", "handoff", "--segments", str(tr_file),
+                      "--output-dir", str(stage), "--emit-segments", str(missing), *bil,
+                      *extra, "--overwrite"])
+    engine_reasons = [l.strip() for l in lines if "stayed in the source language" in l]
+    for l in lines:
+        if "untranslated" in l:
+            print("   " + l.replace(str(work) + "/", ""))
+    mono = stage / f"{pdf.stem}-vi.pdf"
+    dual = stage / f"{pdf.stem}-vi-dual.pdf"
+    if own_dual:
+        make_dual(original, mono, dual, bilingual, pages_opt)
+    if pages_opt:
+        keep_selected_pages(mono, pages_opt)
+        if not own_dual and bil and dual.exists():
+            keep_selected_pages(dual, pages_opt, 2 if bilingual == "alternating" else 1)
+
+    review = stage / f"{pdf.stem}-can-xem-lai.jsonl"
+    if failures:
+        with review.open("w", encoding="utf-8") as f:
+            for r in failures:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    replaced = publish([p for p in (mono, dual, review, ocr_review) if p.exists()], out_dir,
+                       stale=[out_dir / review.name, out_dir / ocr_review.name])
+    print(f"   Translated PDF: {out_dir / mono.name}")
+    if dual.exists():
+        print(f"   Bilingual PDF ({bilingual}{', trang gốc thật' if own_dual else ''}): {out_dir / dual.name}")
+    if pages_opt:
+        print(f"   Các file trong output/ chỉ gồm trang {pages_opt} (để trống PAGES để dịch cả file)")
+    if replaced:
+        print(f"   Đã thay {replaced} file cũ cùng tên (file cũ nằm trong Thùng rác của Google Drive)")
+    if failures:
+        print(f"   {len(failures)} đoạn không qua kiểm tra → output/{review.name}")
+    if ocr_review.exists():
+        print(f"   Số cần xem lại trên bản scan: output/{ocr_review.name}")
+
+    left = {}
+    if missing.exists():
+        engine = "; ".join(engine_reasons) or "engine không đặt được bản dịch vào trang"
+        for line in missing.open(encoding="utf-8"):
+            src = json.loads(line)["src"]
+            left[src] = "chưa có bản dịch" if src not in translations else engine
+    return left
+
+
+def cmd_run(a):
+    base = Path(a.base)
+    state = extract(a)
+    srcs = state["srcs"]
 
     glossary = load_glossary(base / "glossary", a.mon)
     print(f"② Bảng thuật ngữ: {len(glossary)} mục" + (f" (lọc môn {a.mon})" if a.mon else "")
           + ("" if glossary else " — chưa có, dịch không kèm thuật ngữ"))
 
     cache_path = base / "cache" / "translations_cache.jsonl"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache = {} if a.force else load_cache(cache_path)
     todo = [s for s in srcs if s not in cache]
     print(f"③ Dịch: {len(srcs) - len(todo)} đoạn có sẵn trong bộ nhớ đệm, {len(todo)} đoạn mới")
@@ -373,56 +466,8 @@ def cmd_run(a):
         router.report()
 
     print("④ Dựng PDF")
-    tr_file = work / "translations.jsonl"
-    with tr_file.open("w", encoding="utf-8") as f:
-        for s in srcs:
-            if s in cache:
-                f.write(json.dumps({"src": s, "dst": cache[s][0]}, ensure_ascii=False) + "\n")
-    out_dir = base / "output"
-    # Build everything in the work folder first, then publish each file once (see publish).
-    stage = work / "output"
-    shutil.rmtree(stage, ignore_errors=True)
-    stage.mkdir(parents=True)
-    missing = work / "still-missing.jsonl"
-    missing.unlink(missing_ok=True)
-    own_dual = bool(rebuilt) and a.bilingual in ("side-by-side", "alternating")
-    bil = [] if a.bilingual == "off" or own_dual else ["--bilingual", a.bilingual]
-    extra = font_args(a.style) + rebuilt_args + engine_ocr
-    lines = run_repo([str(pdf), *pages, "--engine", "handoff", "--segments", str(tr_file),
-                      "--output-dir", str(stage), "--emit-segments", str(missing), *bil,
-                      *extra, "--overwrite"])
-    for l in lines:
-        if "untranslated" in l:
-            print("   " + l.replace(str(work) + "/", ""))
-    mono = stage / f"{pdf.stem}-vi.pdf"
-    dual = stage / f"{pdf.stem}-vi-dual.pdf"
-    if own_dual:
-        make_dual(original, mono, dual, a.bilingual, a.pages)
-    if a.pages:
-        keep_selected_pages(mono, a.pages)
-        if not own_dual and bil and dual.exists():
-            keep_selected_pages(dual, a.pages, 2 if a.bilingual == "alternating" else 1)
-
-    review = stage / f"{pdf.stem}-can-xem-lai.jsonl"
-    if failures:
-        with review.open("w", encoding="utf-8") as f:
-            for r in failures:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    replaced = publish([p for p in (mono, dual, review, ocr_review) if p.exists()], out_dir,
-                       stale=[out_dir / review.name, out_dir / ocr_review.name])
-    print(f"   Translated PDF: output/{mono.name}")
-    if dual.exists():
-        print(f"   Bilingual PDF ({a.bilingual}{', trang gốc thật' if own_dual else ''}): output/{dual.name}")
-    if a.pages:
-        print(f"   Các file trong output/ chỉ gồm trang {a.pages} (để trống PAGES để dịch cả file)")
-    if replaced:
-        print(f"   Đã thay {replaced} file cũ cùng tên (file cũ nằm trong Thùng rác của Google Drive)")
-    if failures:
-        print(f"   {len(failures)} đoạn không qua kiểm tra → output/{review.name}")
-    if ocr_review.exists():
-        print(f"   Số cần xem lại trên bản scan: output/{ocr_review.name}")
-
-    n_missing = sum(1 for _ in missing.open(encoding="utf-8")) if missing.exists() else 0
+    left = build(state, base / "output", {s: cache[s][0] for s in srcs if s in cache}, failures)
+    n_missing = len(left)
     print(f"\n{'✅' if not n_missing else '⚠️ '} Xong: {len(srcs) - n_missing}/{len(srcs)} đoạn đã dịch."
           + (f" {n_missing} đoạn còn tiếng Anh — chạy lại ô này để dịch bù." if n_missing else ""))
     if stopped:
@@ -430,6 +475,8 @@ def cmd_run(a):
 
 
 def cmd_test(_):
+    from router import Router
+
     router = build_router()
     src = "Goodwill is tested for <s1>impairment</s1> at least annually under IAS 36."
     glossary = [{"en": "impairment", "vi": "suy giảm giá trị", "keep_en": "0"}]
@@ -444,18 +491,13 @@ def cmd_test(_):
             print(f"❌ {p['name']}: {type(e).__name__} — {str(e)[:200]}")
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("test")
-    r = sub.add_parser("run")
+def add_source_args(r):
+    """Options shared by `run` and claude_translate.py prepare."""
     r.add_argument("--base", required=True)
     r.add_argument("--pdf", required=True)
     r.add_argument("--pages", default="")
     r.add_argument("--bilingual", default="side-by-side")
-    r.add_argument("--batch", type=int, default=25)
     r.add_argument("--mon", default="")
-    r.add_argument("--force", action="store_true")
     r.add_argument("--style", default="Cabin", choices=FONT_STYLES,
                    help="font chữ dịch: Cabin, CabinSemiCondensed (hẹp hơn) hoặc default")
     r.add_argument("--ocr", default="auto", choices=["auto", "engine", "off"],
@@ -467,6 +509,16 @@ def main():
                    help="on: so mọi số với bộ đọc thứ hai (Tesseract), số khác nhau được liệt kê để xem lại")
     r.add_argument("--ocr-reader", default="rapid", choices=["rapid", "paddle-vl"],
                    help="paddle-vl: PaddleOCR-VL đọc lại từng dòng (cần GPU, chính xác hơn)")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("test")
+    r = sub.add_parser("run")
+    add_source_args(r)
+    r.add_argument("--batch", type=int, default=25)
+    r.add_argument("--force", action="store_true")
     a = ap.parse_args()
     {"test": cmd_test, "run": cmd_run}[a.cmd](a)
 

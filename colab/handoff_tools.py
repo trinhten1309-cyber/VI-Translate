@@ -19,7 +19,8 @@ def load_glossary(path):
 
 def terms_in(text, glossary):
     """Glossary rows whose English term appears in text (whole words, any case)."""
-    found, taken = [], text.lower()
+    # Justified lines arrive with doubled spaces ("business  combination").
+    found, taken = [], " ".join(text.lower().split())
     for r in glossary:
         pat = r"\b" + re.escape(r["en"].lower()) + r"s?\b"
         if re.search(pat, taken):

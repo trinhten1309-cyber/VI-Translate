@@ -29,12 +29,25 @@ Tesseract. Số nào hai bộ đọc ra khác nhau, hoặc sai định dạng (t
 PaddleOCR-VL đọc lại từng dòng (chính xác hơn RapidOCR, cần **Runtime → Change
 runtime type → T4 GPU**; không có GPU thì tự quay về RapidOCR).
 
+## Dịch bằng Claude Code (không cần API key)
+
+`colab/claude_translate.py` chạy đúng các bước của notebook, chỉ thay bước gọi
+API: `prepare` xuất các lô `id<TAB>tiếng Anh` kèm thuật ngữ của lô, Claude ghi
+`id<TAB>tiếng Việt` (không chép lại tiếng Anh), `finish` kiểm tra, dựng PDF và
+bản song ngữ. Hướng dẫn đầy đủ và prompt mẫu cho phiên mới:
+[`.claude/skills/claude-translate/SKILL.md`](../.claude/skills/claude-translate/SKILL.md).
+
+Không có `glossary/` (hoặc thư mục trống) thì cả notebook và chế độ này dùng
+bảng mẫu `colab/glossary/ifrs-acca.csv` (thuật ngữ IFRS 3/ACCA).
+
 ## Các file
 
 | File | Vai trò |
 |---|---|
 | `ACCA_Translate.ipynb` | Notebook: kết nối Drive, cài đặt, nạp key, form dịch |
 | `acca_translate.py` | Quy trình chính: tách đoạn → dịch theo lô kèm thuật ngữ → kiểm tra → dựng PDF |
+| `claude_translate.py` | Dịch bằng Claude: `prepare` (lô `id<TAB>src` kèm thuật ngữ) → Claude ghi `id<TAB>dst` → `finish` (kiểm tra, dựng PDF, PNG để xem) |
+| `glossary/ifrs-acca.csv` | Bảng thuật ngữ mẫu IFRS/ACCA, dùng khi Drive không có `glossary/` |
 | `router.py` | Tự chuyển nguồn API khi hết lượt ngày, chờ khi bị giới hạn theo phút |
 | `handoff_tools.py` | Kiểm tra bản dịch: thẻ `<bN>`/`<sN>`, số liệu, thuật ngữ |
 | `ocr_layer.py` | Trang chỉ có ảnh (scan) → nhận dạng chữ bằng RapidOCR thành lớp chữ ẩn; dòng không chắc chắn giữ nguyên ảnh |
