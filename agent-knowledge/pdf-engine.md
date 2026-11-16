@@ -53,6 +53,20 @@ marker, and sent Mac users off to reinstall a complete app.
   that mixes text sizes (a subscripted variable) keeps its source glyphs.
   The layout model calls a standard's numbered paragraphs (IFRS: paragraph
   numbers in a left column) a table, so these rules also carry prose lists.
+  A heading or sentence printed across the columns hides their gutter. When
+  no column is found, `rows_without_spanning_text` sets aside paragraphs of
+  unbroken lines that cross a gutter the other rows keep clear - at most a
+  fifth of the rows, each lying over two of the remaining columns - and gives
+  each a full-width cell; a crossing row with a column gap of its own is a
+  table row and keeps the table protected. A lone margin number ("B63") keeps
+  its column when the text beside it starts on the edge at least three rows
+  share. `table_bounds_clear_of_text` moves a table edge off a "plain text"
+  region the model trusts more when that costs at most 15% of the table's
+  height. Words that follow one another on a line of a cell also own the space
+  between them, so a second space at a change of face does not break the item.
+  An `abandon` region is a footnote, and is translated, when `is_footnote_text`
+  holds: lower half of the page, opens with a reference mark, six words or
+  more, and other text below it (the running footer).
   `cluster_table_words` holds a justified line together (`justified_units`):
   three or more alike spaces between words, on a line that reaches the cell's
   right edge, are justification, not a code-column gap.

@@ -14,6 +14,7 @@ from pdf2zh.rules import (
     formula_regions,
     has_index_page_reference,
     is_bullet_character,
+    is_footnote_text,
     is_formula_font,
     is_scanned_page,
     line_height_for_language,
@@ -21,6 +22,7 @@ from pdf2zh.rules import (
     matching_table_cells,
     min_line_height_for_language,
     should_translate_table_cell,
+    table_bounds_clear_of_text,
     text_aligned_table_cells,
 )
 from tests.test_damaged_sources import translated
@@ -132,6 +134,114 @@ class TextAlignedTableTests(unittest.TestCase):
         )
         # One column left means nothing divides cleanly, so the table stays whole.
         self.assertEqual(text_aligned_table_cells((0, 0, 400, 50), words), [])
+
+
+    def test_a_heading_across_numbered_paragraphs_becomes_its_own_cell(self):
+        """IFRS 3 page 20: one model table around "Effective date and
+        transition" and paragraphs 64-64H; the heading hid the gutter and the
+        whole page stayed in English."""
+        words = (
+            _words(0, 10, (10, "Effective date and transition"))
+            + _words(1, 30, (10, "64"), (50, "This IFRS shall be applied prospectively to"))
+            + _words(2, 40, (50, "business combinations."))
+            + _words(3, 55, (10, "64A"), (50, "[Deleted]"))
+            + _words(4, 70, (10, "64B"), (50, "Improvements to IFRSs amended paragraphs"))
+            + _words(5, 80, (50, "19, 30 and B56."))
+            + _words(6, 95, (10, "64C"), (50, "Paragraphs 65A to 65E were added."))
+        )
+        cells = text_aligned_table_cells((0, 0, 400, 110), words)
+        self.assertEqual(
+            self._cells_text(cells, words),
+            ["Effective date and transition", "64", "64A", "64B", "64C",
+             "This IFRS shall be applied prospectively to business combinations.",
+             "[Deleted]", "Improvements to IFRSs amended paragraphs 19, 30 and B56.",
+             "Paragraphs 65A to 65E were added."],
+        )
+        heading = cells[0]
+        self.assertLess(heading[3], 30)  # the heading stops above paragraph 64
+        self.assertGreaterEqual(heading[2], 400)  # and may use the full width
+
+    def test_a_sentence_above_a_list_of_names_spans_both_columns(self):
+        """IFRS 3 page 55: the approval sentence, then signatories and their roles."""
+        words = (
+            _words(0, 10, (10, "Definition of a Business was approved for issue by all of the 14 members"))
+            + _words(1, 19, (10, "of the Board."))
+            + _words(2, 35, (10, "Hans Hoogervorst"), (200, "Chairman"))
+            + _words(3, 50, (10, "Suzanne Lloyd"), (200, "Vice-Chair"))
+        )
+        for line, name in enumerate(("Nick Anderson", "Martin Edelmann", "Gary Kabureck",
+                                     "Jianqiao Lu", "Darrel Scott", "Thomas Scott",
+                                     "Ann Tarca", "Mary Tokar"), start=4):
+            words += _words(line, 5 + line * 15, (10, name))
+        cells = text_aligned_table_cells((0, 0, 400, 200), words)
+        texts = self._cells_text(cells, words)
+        self.assertEqual(
+            texts[0],
+            "Definition of a Business was approved for issue by all of the 14 members of the Board.",
+        )
+        self.assertIn("Hans Hoogervorst", texts)
+        self.assertEqual(texts[-2:], ["Chairman", "Vice-Chair"])
+
+    def test_table_rows_that_cross_their_own_gutter_stay_protected(self):
+        """A crossing row with a column gap of its own is a table row, not prose."""
+        words = _words(0, 10, (10, "Description of the item sold in the year"), (300, "1,200"))
+        for line in range(1, 7):
+            words += _words(line, 10 + line * 10, (10, "Item"), (150, "Code"), (300, "100"))
+        # The first row's text runs over the "Code" column and keeps its amount.
+        self.assertEqual(text_aligned_table_cells((0, 0, 400, 90), words), [])
+
+    def test_a_ragged_last_column_is_not_text_across_a_gutter(self):
+        words = []
+        for line in range(6):
+            words += _words(line, 10 + line * 10, (10, "ordinary prose that wraps here"))
+        words += _words(6, 70, (10, "ordinary prose that wraps and runs on further"))
+        self.assertEqual(text_aligned_table_cells((0, 0, 400, 90), words), [])
+
+    def test_a_lone_paragraph_number_keeps_its_margin_column(self):
+        """IFRS 3 page 46: "B63" beside its paragraph and the list under it."""
+        words = (
+            _words(0, 10, (10, "B63"), (50, "Examples of other IFRSs include:"))
+            + _words(1, 25, (50, "(a)"), (80, "IAS 38 prescribes the accounting;"))
+            + _words(2, 40, (50, "(b)"), (80, "[deleted]"))
+            + _words(3, 55, (50, "(c)"), (80, "IAS 12 prescribes the accounting."))
+        )
+        cells = text_aligned_table_cells((0, 0, 400, 70), words)
+        self.assertEqual(
+            self._cells_text(cells, words),
+            ["B63", "Examples of other IFRSs include:", "(a) IAS 38 prescribes the accounting;",
+             "(b) [deleted]", "(c) IAS 12 prescribes the accounting."],
+        )
+
+    def test_a_table_edge_inside_a_trusted_paragraph_moves_off_it(self):
+        """IFRS 3 page 20: the table began inside the last line of paragraph 63."""
+        text = [((112, 127, 459, 162), 0.70), ((127, 220, 460, 303), 0.71)]
+        self.assertEqual(
+            table_bounds_clear_of_text((108, 146, 462, 706), 0.56, text),
+            (108.0, 162.0, 462.0, 706.0),
+        )
+        # A paragraph the model trusts less than the table does not move it,
+        self.assertEqual(
+            table_bounds_clear_of_text((108, 146, 462, 706), 0.80, text),
+            (108.0, 146.0, 462.0, 706.0),
+        )
+        # nor does one that would take a large part of the table.
+        self.assertEqual(
+            table_bounds_clear_of_text((108, 146, 462, 300), 0.56, [((112, 100, 459, 250), 0.9)]),
+            (108.0, 146.0, 462.0, 300.0),
+        )
+
+    def test_a_footnote_is_told_from_a_running_footer(self):
+        """IFRS 3 page 44: the model set the footnote of B56 aside with the footer."""
+        footer = _words(9, 731, (231, "© IFRS Foundation"))
+        note = _words(8, 697, (112, "1"), (120, "In paragraphs B56 to B62 the term refers to awards."))
+        words = note + footer
+        self.assertTrue(is_footnote_text((111, 695, 459, 714), words, 842))
+        self.assertFalse(is_footnote_text((231, 730, 311, 741), words, 842))  # the footer itself
+        self.assertFalse(is_footnote_text((111, 695, 459, 714), note, 842))  # last text on the page
+        header = _words(0, 99, (112, "1"), (120, "A running header of six words or more"))
+        self.assertFalse(is_footnote_text((111, 97, 459, 110), header + footer, 842))
+        plain = _words(8, 697, (112, "Chapter 3 Business combinations and group accounts continued"))
+        self.assertFalse(is_footnote_text((111, 695, 459, 714), plain + footer, 842))
 
 
 class PreservationRuleTests(unittest.TestCase):

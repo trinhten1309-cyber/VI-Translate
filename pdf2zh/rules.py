@@ -279,6 +279,215 @@ def opens_item(line: Sequence[Sequence[Any]]) -> bool:
     return len(line) >= 2 and ITEM_MARKER_PATTERN.fullmatch(str(line[0][4])) is not None
 
 
+def aligned_columns(
+    items: Sequence[tuple[float, float, float, float, str]],
+    rows: Sequence[Sequence[tuple[float, float, float, float, str]]],
+    gutter: float,
+) -> list[list[float]]:
+    """Columns of words parted by white space that no word crosses."""
+    columns: list[list[float]] = []
+    for x0, _y0, x1, _y1, _text in sorted(items):
+        if columns and x0 < columns[-1][1] + gutter:
+            columns[-1][1] = max(columns[-1][1], x1)
+        else:
+            columns.append([x0, x1])
+
+    def populated(left: float, right: float) -> list[Sequence[tuple[float, float, float, float, str]]]:
+        return [
+            row for row in rows
+            if any(left <= (item[0] + item[2]) / 2 <= right for item in row)
+        ]
+
+    # A real column holds text on more than one row. A lone gap inside a
+    # centred heading is not a column, so it joins the column beside it.
+    merged = True
+    while merged and len(columns) > 1:
+        merged = False
+        for index, (left, right) in enumerate(columns):
+            holding = populated(left, right)
+            if len(holding) >= 2:
+                continue
+            # A standard numbers its paragraphs in the margin, and a region
+            # may hold just one of them ("B63" beside its paragraph and the
+            # list under it). The number is a column when the text beside it
+            # starts on the edge the rows below share.
+            if index == 0 and len(holding) == 1:
+                row = sorted(holding[0])
+                inside = [item for item in row if left <= (item[0] + item[2]) / 2 <= right]
+                beside = [item for item in row if item[0] > right]
+                next_left, next_right = columns[1]
+                if (
+                    len(inside) == 1
+                    and beside
+                    and abs(beside[0][0] - next_left) <= 1.5
+                    and len(populated(next_left, next_right)) >= 3
+                ):
+                    continue
+            neighbour = index - 1 if index else index + 1
+            columns[neighbour] = [
+                min(columns[neighbour][0], left), max(columns[neighbour][1], right)
+            ]
+            del columns[index]
+            merged = True
+            break
+    return columns
+
+
+def rows_without_spanning_text(
+    rows: Sequence[list[tuple[float, float, float, float, str]]],
+    gutter: float,
+    height: float,
+) -> tuple[
+    list[list[tuple[float, float, float, float, str]]],
+    list[list[tuple[float, float, float, float, str]]],
+] | None:
+    """Set aside the few paragraphs printed across a table's columns.
+
+    The layout model draws one table around a standard's numbered paragraphs
+    together with the heading above them, around a glossary with the sentence
+    that introduces it, around a list of signatories with the sentence before
+    it. That one line crosses the gutter every other row keeps clear, so no
+    column was found and the whole region stayed in the source language
+    (IFRS 3 pages 20, 24, 55 and 56). A gutter is accepted here when at most a
+    fifth of the rows cross it, and only when each crossing row belongs to a
+    paragraph of unbroken lines: a row with a column gap of its own is a table
+    row, and a table that crosses its own gutter is not divided.
+    Returns the rows that keep the gutter and the spanning paragraphs' rows,
+    or None when the region does not divide this way.
+    """
+    allowed = len(rows) // 5
+    if allowed < 1:
+        return None
+    segments: list[list[list[float]]] = []
+    for row in rows:
+        parts: list[list[float]] = []
+        for item in sorted(row):
+            if parts and item[0] < parts[-1][1] + gutter:
+                parts[-1][1] = max(parts[-1][1], item[2])
+            else:
+                parts.append([item[0], item[2]])
+        segments.append(parts)
+    # Where few rows reach, and none of them is a table row, the rows that do
+    # reach may be text set across a gutter.
+    edges = sorted({edge for parts in segments for part in parts for edge in part})
+    crossing: set[int] = set()
+    for start, end in zip(edges, edges[1:]):
+        middle = (start + end) / 2
+        covering = [
+            index for index, parts in enumerate(segments)
+            if any(part[0] <= middle <= part[1] for part in parts)
+        ]
+        if len(covering) <= allowed and all(len(segments[index]) == 1 for index in covering):
+            crossing.update(covering)
+    if not crossing:
+        return None
+
+    # A crossing line takes the rest of its paragraph with it.
+    paragraphs: list[list[int]] = []
+    for index, row in enumerate(rows):
+        if paragraphs:
+            previous = rows[paragraphs[-1][-1]]
+            if min(word[1] for word in row) - max(word[3] for word in previous) <= height * 0.5:
+                paragraphs[-1].append(index)
+                continue
+        paragraphs.append([index])
+    candidates = [
+        paragraph for paragraph in paragraphs
+        if crossing.intersection(paragraph)
+        and all(len(segments[index]) == 1 for index in paragraph)
+    ]
+
+    def without(chosen: Sequence[list[int]]):
+        taken = {index for paragraph in chosen for index in paragraph}
+        kept = [row for index, row in enumerate(rows) if index not in taken]
+        columns = aligned_columns([item for row in kept for item in row], kept, gutter)
+        return kept, columns
+
+    # The long last line of a ragged column reaches where few rows do as well.
+    # Only a paragraph that lies over two of the columns left without it spans.
+    _kept, columns = without(candidates)
+    spanning = [
+        paragraph for paragraph in candidates
+        if sum(
+            any(segments[index][0][0] < right and segments[index][0][1] > left for index in paragraph)
+            for left, right in columns
+        ) >= 2
+    ]
+    if not spanning or sum(len(paragraph) for paragraph in spanning) > allowed:
+        return None
+    kept, columns = without(spanning)
+    if len(columns) < 2:
+        return None
+    return kept, [[item for index in paragraph for item in rows[index]] for paragraph in spanning]
+
+
+def table_bounds_clear_of_text(
+    table_bounds: Sequence[float],
+    table_confidence: float,
+    text_regions: Iterable[tuple[Sequence[float], float]],
+) -> tuple[float, float, float, float]:
+    """Pull a table's top or bottom edge back off a paragraph it cuts through.
+
+    The model's table around IFRS 3 paragraphs 64-64H began inside the last
+    line of paragraph 63, which the model had also, and with more confidence,
+    boxed as text: the paragraph's first lines were translated and its last
+    line stayed in English. A text region the model trusts more than the table
+    keeps its lines when it straddles the table's edge, provided that costs the
+    table no more than 15% of its height at that end.
+    """
+    x0, y0, x1, y1 = (float(value) for value in table_bounds)
+    height = y1 - y0
+    for bounds, confidence in text_regions:
+        if confidence <= table_confidence:
+            continue
+        tx0, ty0, tx1, ty1 = (float(value) for value in bounds)
+        if tx1 <= x0 or tx0 >= x1:
+            continue
+        if ty0 < y0 < ty1 and ty1 - y0 <= height * 0.15:
+            y0 = ty1
+        elif ty0 < y1 < ty1 and y1 - ty0 <= height * 0.15:
+            y1 = ty0
+    return x0, y0, x1, y1
+
+
+FOOTNOTE_MARKER_PATTERN = re.compile(r"(?:\d{1,3}|[*\u2020\u2021\u00a7]{1,3}|\([a-z0-9]{1,2}\))")
+
+
+def is_footnote_text(
+    bounds: Sequence[float],
+    words: Iterable[Sequence[Any]],
+    page_height: float,
+) -> bool:
+    """Whether a region the model set aside as page furniture is a footnote.
+
+    The model's `abandon` class covers running headers, footers and page
+    numbers, which stay as printed, and it also took the footnote of IFRS 3
+    paragraph B56 ("1 In paragraphs B56-B62 the term ..."). A footnote opens
+    with its reference mark, runs to a sentence of six words or more, sits in
+    the lower half of the page, and is not the last text on it: the running
+    footer lies below.
+    """
+    x0, y0, x1, y1 = (float(value) for value in bounds)
+    if y0 < page_height / 2:
+        return False
+    inside = []
+    below = False
+    for word in words:
+        wx0, wy0, wx1, wy1 = (float(value) for value in word[:4])
+        cx, cy = (wx0 + wx1) / 2, (wy0 + wy1) / 2
+        if x0 <= cx <= x1 and y0 <= cy <= y1:
+            inside.append((round(cy), wx0, str(word[4])))
+        elif cy > y1:
+            below = True
+    inside.sort()
+    return (
+        below
+        and len(inside) >= 6
+        and FOOTNOTE_MARKER_PATTERN.fullmatch(inside[0][2]) is not None
+        and any(character.islower() for _cy, _x, text in inside[1:] for character in text)
+    )
+
+
 def text_aligned_table_cells(
     model_bounds: Sequence[Any],
     words: Iterable[Sequence[Any]],
@@ -329,29 +538,16 @@ def text_aligned_table_cells(
     ]
     gutter = max(3.0, height * 0.4, 2.0 * median(spaces) if spaces else 0.0)
 
-    columns: list[list[float]] = []
-    for x0, _y0, x1, _y1, _text in sorted(items):
-        if columns and x0 < columns[-1][1] + gutter:
-            columns[-1][1] = max(columns[-1][1], x1)
-        else:
-            columns.append([x0, x1])
-    # A real column holds text on more than one row. A lone gap inside a
-    # centred heading is not a column, so it joins the column beside it.
-    merged = True
-    while merged and len(columns) > 1:
-        merged = False
-        for index, (left, right) in enumerate(columns):
-            populated = sum(
-                any(left <= (item[0] + item[2]) / 2 <= right for item in row) for row in rows
-            )
-            if populated < 2:
-                neighbour = index - 1 if index else index + 1
-                columns[neighbour] = [
-                    min(columns[neighbour][0], left), max(columns[neighbour][1], right)
-                ]
-                del columns[index]
-                merged = True
-                break
+    columns = aligned_columns(items, rows, gutter)
+    spanning: list[list[tuple[float, float, float, float, str]]] = []
+    if len(columns) < 2:
+        # A heading or a sentence set across the columns hides their gutter.
+        divided = rows_without_spanning_text(rows, gutter, height)
+        if divided is None:
+            return []
+        rows, spanning = divided
+        items = [item for row in rows for item in row]
+        columns = aligned_columns(items, rows, gutter)
     if not 2 <= len(columns) <= 12:
         return []
 
@@ -361,7 +557,22 @@ def text_aligned_table_cells(
         if bounds is not None and bounds[3] - bounds[1] <= 2.0:
             horizontal_rules.append(bounds)
 
+    # A spanning paragraph closes the cells above it the way a rule does.
+    spanning_bounds = [
+        (
+            min(word[0] for word in paragraph),
+            min(word[1] for word in paragraph),
+            max(word[2] for word in paragraph),
+            max(word[3] for word in paragraph),
+        )
+        for paragraph in spanning
+    ]
+    tops = sorted({item[1] for item in items} | {bounds[1] for bounds in spanning_bounds})
+
     cells: list[tuple[float, float, float, float]] = []
+    for x0, y0, _x1, y1 in spanning_bounds:
+        below = [top for top in tops if top > y1]
+        cells.append((x0 - 2.0, y0, mx1, below[0] - 1.0 if below else y1))
     for index, (left, right) in enumerate(columns):
         members = sorted(
             (item for item in items if left <= (item[0] + item[2]) / 2 <= right),
@@ -419,6 +630,9 @@ def text_aligned_table_cells(
                 middle = (rule[1] + rule[3]) / 2
                 if y1 <= middle < limit and rule[0] < right_edge and rule[2] > x0:
                     limit = middle - 0.5
+            for bounds in spanning_bounds:
+                if y1 <= bounds[1] < limit:
+                    limit = bounds[1] - 1.0
             cells.append((x0, y0, max(right_edge, x0 + 1.0), max(y1, limit)))
     return cells if len(cells) >= 2 else []
 

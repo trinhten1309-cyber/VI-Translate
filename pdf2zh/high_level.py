@@ -36,10 +36,12 @@ from pdf2zh.rules import (
     has_index_page_reference,
     cluster_table_words,
     formula_regions,
+    is_footnote_text,
     is_scanned_page,
     matching_table_cells,
     page_has_image,
     should_translate_table_cell,
+    table_bounds_clear_of_text,
     text_aligned_table_cells,
     words_by_cell,
 )
@@ -477,7 +479,22 @@ def translate_patch(
                     raw_x0, raw_y0, raw_x1, raw_y1 = (
                         float(value) for value in d.xyxy.squeeze()
                     )
+                    if name == "abandon" and is_footnote_text(
+                        (raw_x0, raw_y0, raw_x1, raw_y1),
+                        doc_zh[page.pageno].get_text("words"),
+                        float(page_rect.height),
+                    ):
+                        continue
                     if name == "table":
+                        raw_x0, raw_y0, raw_x1, raw_y1 = table_bounds_clear_of_text(
+                            (raw_x0, raw_y0, raw_x1, raw_y1),
+                            float(d.conf),
+                            [
+                                (other.xyxy.squeeze(), float(other.conf))
+                                for other in page_layout.boxes
+                                if page_layout.names[int(other.cls)] == "plain text"
+                            ],
+                        )
                         model_table_bounds.append(
                             (raw_x0, raw_y0, raw_x1, raw_y1)
                         )
@@ -583,6 +600,23 @@ def translate_patch(
                                 np.clip(int(h - wy0 + 1), 0, h - 1),
                             )
                             box[py0:py1, px0:px1] = next_class
+                        # A change of face inside a line leaves two spaces
+                        # side by side ("IAS 36" + " Impairment of Assets"),
+                        # and the second fell on the unpainted gap between the
+                        # words: the item broke in two there. Words that follow
+                        # one another on a line own the space between them.
+                        ordered = sorted(cluster.words, key=lambda word: (float(word[1]) + float(word[3]), float(word[0])))
+                        for before, after in zip(ordered, ordered[1:]):
+                            by0, by1 = float(before[1]), float(before[3])
+                            if not by0 <= (float(after[1]) + float(after[3])) / 2 <= by1:
+                                continue
+                            gx0, gx1 = float(before[2]), float(after[0])
+                            if gx1 <= gx0:
+                                continue
+                            box[
+                                np.clip(int(h - by1 - 1), 0, h - 1):np.clip(int(h - by0 + 1), 0, h - 1),
+                                np.clip(int(gx0), 0, w - 1):np.clip(int(gx1 + 1), 0, w - 1),
+                            ] = next_class
                         bx0, by0, bx1, by1 = cluster.bbox
                         content_y0 = min(by0, *(float(word[1]) for word in cluster.words))
                         content_y1 = max(by1, *(float(word[3]) for word in cluster.words))
