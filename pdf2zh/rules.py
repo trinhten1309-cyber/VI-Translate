@@ -33,6 +33,11 @@ BULLET_CHARACTERS = frozenset(
 
 PRIVATE_USE_BULLETS = frozenset(("\uf0b7", "\uf0d8", "\uf0fc"))
 
+# A word that numbers a list item: "(a)", "b)", "(iv)", "3.", "(2)".
+ITEM_MARKER_PATTERN = re.compile(
+    r"\(?(?:\d{1,3}(?:\.\d{1,3})*|[A-Za-z]|[ivxlcdmIVXLCDM]{1,6})[.)]"
+)
+
 LANGUAGE_LINE_HEIGHT = {
     "zh-cn": 1.4,
     "zh-tw": 1.4,
@@ -266,6 +271,14 @@ def matching_table_cells(
     return cells
 
 
+def opens_item(line: Sequence[Sequence[Any]]) -> bool:
+    """Whether a line, as words left to right, starts with a list item's marker.
+
+    The marker must introduce text on its row: a lone "(5)" is a value.
+    """
+    return len(line) >= 2 and ITEM_MARKER_PATTERN.fullmatch(str(line[0][4])) is not None
+
+
 def text_aligned_table_cells(
     model_bounds: Sequence[Any],
     words: Iterable[Sequence[Any]],
@@ -376,11 +389,18 @@ def text_aligned_table_cells(
                     and rule[0] < right and rule[2] > left
                     for rule in horizontal_rules
                 )
+                # A list item's wrapped lines hang under its text, not its
+                # marker: "(a) the accounting ... in the" over "financial
+                # statements ..." is one item, so its edge is the second word's.
+                edge = previous[0][0]
+                if opens_item(previous) and line[0][0] - previous[0][0] > height:
+                    edge = previous[1][0]
                 if not (
                     top - previous_bottom > height * 0.5
                     or crossed
-                    or abs(line[0][0] - previous[0][0]) > max(1.5, height * 0.2)
+                    or abs(line[0][0] - edge) > max(1.5, height * 0.2)
                     or line[0][4][:1] in BULLET_CHARACTERS
+                    or opens_item(line)
                 ):
                     blocks[-1].append(line)
                     continue
@@ -481,6 +501,54 @@ def should_translate_table_cell(text: str) -> bool:
     return any(natural_token(token) for token in value.split())
 
 
+def justified_units(
+    words: Sequence[Sequence[Any]],
+    cell: tuple[float, float, float, float],
+    gap_limit: float,
+    height: float,
+) -> list[list[Sequence[Any]]]:
+    """The cell's words, left to right, with each justified line held together.
+
+    A justified line set across the full measure stretches every space by the
+    same amount. IFRS 3 sets "a combination of entities or businesses under
+    common control" alone on its line, so each space grew to 6.5 pt, past the
+    gap that separates a description from its code column; the line was cut
+    into nine one-word clusters, each translated on its own. Spaces that are
+    all alike, between words, on a line that reaches the cell's right edge
+    are a justified line; a column gap is one space far wider than the rest.
+    A list marker ahead of the line keeps its own gap.
+    """
+    cx0, _cy0, cx1, _cy1 = cell
+    rows: list[list[Sequence[Any]]] = []
+    for word in sorted(words, key=lambda item: (float(item[1]) + float(item[3])) / 2):
+        middle = (float(word[1]) + float(word[3])) / 2
+        if rows and abs(middle - (float(rows[-1][0][1]) + float(rows[-1][0][3])) / 2) <= height * 0.5:
+            rows[-1].append(word)
+        else:
+            rows.append([word])
+    units: list[list[Sequence[Any]]] = []
+    for row in rows:
+        row.sort(key=lambda item: float(item[0]))
+        start = 1 if opens_item(row) else 0
+        inner = row[start:]
+        gaps = [float(b[0]) - float(a[2]) for a, b in zip(inner, inner[1:])]
+        justified = (
+            len(gaps) >= 3
+            and min(gaps) > 0
+            and max(gaps) > gap_limit
+            and max(gaps) <= min(gaps) * 1.35 + 0.5
+            and sum(any(c.isalpha() for c in str(w[4])) for w in inner) >= 0.75 * len(inner)
+            and float(inner[-1][2]) >= cx1 - max(6.0, 0.05 * (cx1 - cx0))
+        )
+        if justified:
+            units.extend([word] for word in row[:start])
+            units.append(list(inner))
+        else:
+            units.extend([word] for word in row)
+    units.sort(key=lambda unit: (float(unit[0][0]), float(unit[0][1])))
+    return units
+
+
 def cluster_table_words(
     words: Iterable[Sequence[Any]],
     cell: Sequence[Any],
@@ -501,19 +569,22 @@ def cluster_table_words(
     gap_limit = max(3.0, median(heights) * 0.6)
     groups: list[list[Sequence[Any]]] = []
     group_bounds: list[list[float]] = []
-    for word in sorted(items, key=lambda item: (float(item[0]), float(item[1]))):
-        x0, y0, x1, y1 = (float(value) for value in word[:4])
+    for unit in justified_units(items, bounds, gap_limit, median(heights)):
+        x0, y0, x1, y1 = (float(value) for value in unit[0][:4])
+        for word in unit[1:]:
+            x0, y0 = min(x0, float(word[0])), min(y0, float(word[1]))
+            x1, y1 = max(x1, float(word[2])), max(y1, float(word[3]))
         matches = [
             index
             for index, current in enumerate(group_bounds)
             if x0 <= current[2] + gap_limit and x1 >= current[0] - gap_limit
         ]
         if not matches:
-            groups.append([word])
+            groups.append(list(unit))
             group_bounds.append([x0, y0, x1, y1])
             continue
         target = matches[0]
-        groups[target].append(word)
+        groups[target].extend(unit)
         current = group_bounds[target]
         current[:] = [
             min(current[0], x0),
