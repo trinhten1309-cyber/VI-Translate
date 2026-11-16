@@ -52,9 +52,10 @@ BILINGUAL_MODES = ("off", "side-by-side", "alternating", "layers")
 DEFAULT_THREADS = 4
 MAX_THREADS = 8
 
-# Environment the engine reads for --font* and --no-scan-cover. Kept here so the
-# CLI does not import the heavy core just to parse arguments; must match
-# pdf2zh.high_level.CUSTOM_FONT_ENV / SKIP_SCAN_COVER_ENV (checked by tests).
+# Environment the engine reads for --font*, --no-scan-cover and
+# --translate-all-scan-text. Kept here so the CLI does not import the heavy core
+# just to parse arguments; must match pdf2zh.high_level.CUSTOM_FONT_ENV /
+# SKIP_SCAN_COVER_ENV / TRANSLATE_ALL_SCAN_TEXT_ENV (checked by tests).
 CUSTOM_FONT_ENV = {
     0: "VI_FONT_REGULAR",
     1: "VI_FONT_BOLD",
@@ -62,6 +63,7 @@ CUSTOM_FONT_ENV = {
     3: "VI_FONT_BOLDITALIC",
 }
 SKIP_SCAN_COVER_ENV = "VI_SKIP_SCAN_COVER"
+TRANSLATE_ALL_SCAN_TEXT_ENV = "VI_TRANSLATE_ALL_SCAN_TEXT"
 
 
 class TranslationError(RuntimeError):
@@ -244,6 +246,13 @@ def _parser() -> argparse.ArgumentParser:
         help="do not draw white boxes over translated text on scanned pages "
         "(use when the picture text was already removed)",
     )
+    parser.add_argument(
+        "--translate-all-scan-text",
+        action="store_true",
+        help="on scanned pages, also translate text the layout model takes for a "
+        "header, footer, figure or formula (use when the text layer was rebuilt "
+        "and every line of it should be translated)",
+    )
     parser.add_argument("--ignore-cache", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     return parser
@@ -273,6 +282,8 @@ def _apply_output_options(args: argparse.Namespace) -> None:
             os.environ[name] = str(face.expanduser().resolve())
     if args.no_scan_cover:
         os.environ[SKIP_SCAN_COVER_ENV] = "1"
+    if args.translate_all_scan_text:
+        os.environ[TRANSLATE_ALL_SCAN_TEXT_ENV] = "1"
 
 
 def _require_core() -> None:

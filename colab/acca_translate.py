@@ -12,6 +12,7 @@ import argparse
 import csv
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -221,6 +222,37 @@ def keep_selected_pages(path, pages, per_page=1):
     tmp.replace(path)
 
 
+def rebuild_fonts(style):
+    """{face: font file} for rebuild_text_layer, matching font_args(style), so
+    numbers and labels that are not translated use the translation's font."""
+    if style == "default":
+        return None
+    files = {"regular": "Regular", "bold": "Bold", "italic": "Italic", "bold-italic": "BoldItalic"}
+    fonts = {face: FONTS / f"{style}-{name}.ttf" for face, name in files.items()}
+    return {face: path for face, path in fonts.items() if path.is_file()} or None
+
+
+def publish(files, out_dir, stale=()):
+    """Copy finished FILES into OUT_DIR, deleting any older file of the same
+    name first, and delete the STALE paths. On a mounted Google Drive an
+    overwritten file keeps its id, and Drive's preview keeps showing the
+    previous run; a deleted-then-created file gets a new id and a fresh
+    preview (the old one goes to the Drive trash). Returns how many old files
+    were replaced."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    replaced = 0
+    for path in files:
+        target = out_dir / path.name
+        if target.exists():
+            target.unlink()
+            replaced += 1
+        shutil.copyfile(path, target)
+    for path in stale:
+        if path.exists() and path.name not in {f.name for f in files}:
+            path.unlink()
+    return replaced
+
+
 def load_cache(path):
     cache = {}
     if path.exists():
@@ -260,14 +292,19 @@ def cmd_run(a):
         if need:
             print(f"⓪ {len(need)} trang dạng ảnh có lớp chữ → xoá chữ trong ảnh, dựng lại thành chữ thật...")
             pdf = work / pdf.name
-            rebuilt = rtl.rebuild(source, pdf, a.pages)
+            rebuilt = rtl.rebuild(source, pdf, a.pages, fonts=rebuild_fonts(a.style))
             print(f"   đã dựng lại {len(rebuilt)} trang")
+
+    # Rebuilt pages: the picture text is already gone (no white cover boxes) and
+    # every rebuilt line is meant to be translated, whatever the layout model
+    # takes it for (it once left "PART D: ..." and "(Total = 20 marks)" in English).
+    rebuilt_args = ["--no-scan-cover", "--translate-all-scan-text"] if rebuilt else []
 
     print(f"① Tách đoạn: {pdf.name} {('trang ' + a.pages) if a.pages else '(cả file)'}")
     seg_file = work / "segments.jsonl"
     seg_file.unlink(missing_ok=True)
     run_repo([str(pdf), *pages, "--engine", "handoff", "--emit-segments", str(seg_file),
-              "--output-dir", str(work / "extract"), *engine_ocr, "--overwrite"],
+              "--output-dir", str(work / "extract"), *rebuilt_args, *engine_ocr, "--overwrite"],
              hint="Nếu PDF là ảnh scan: để OCR = auto (hoặc engine) rồi chạy lại.")
     srcs = list(dict.fromkeys(json.loads(l)["src"] for l in seg_file.open(encoding="utf-8")))
     print(f"   {len(srcs)} đoạn cần dịch")
@@ -314,36 +351,48 @@ def cmd_run(a):
             if s in cache:
                 f.write(json.dumps({"src": s, "dst": cache[s][0]}, ensure_ascii=False) + "\n")
     out_dir = base / "output"
+    # Build everything in the work folder first, then publish each file once (see publish).
+    stage = work / "output"
+    shutil.rmtree(stage, ignore_errors=True)
+    stage.mkdir(parents=True)
     missing = work / "still-missing.jsonl"
     missing.unlink(missing_ok=True)
     own_dual = bool(rebuilt) and a.bilingual in ("side-by-side", "alternating")
     bil = [] if a.bilingual == "off" or own_dual else ["--bilingual", a.bilingual]
-    extra = font_args(a.style) + (["--no-scan-cover"] if rebuilt else []) + engine_ocr
+    extra = font_args(a.style) + rebuilt_args + engine_ocr
     lines = run_repo([str(pdf), *pages, "--engine", "handoff", "--segments", str(tr_file),
-                      "--output-dir", str(out_dir), "--emit-segments", str(missing), *bil,
+                      "--output-dir", str(stage), "--emit-segments", str(missing), *bil,
                       *extra, "--overwrite"])
     for l in lines:
-        if "PDF:" in l or "untranslated" in l:
-            print("   " + l.replace(str(base) + "/", ""))
+        if "untranslated" in l:
+            print("   " + l.replace(str(work) + "/", ""))
+    mono = stage / f"{pdf.stem}-vi.pdf"
+    dual = stage / f"{pdf.stem}-vi-dual.pdf"
     if own_dual:
-        mono = out_dir / f"{pdf.stem}-vi.pdf"
-        dual = out_dir / f"{pdf.stem}-vi-dual.pdf"
         make_dual(original, mono, dual, a.bilingual, a.pages)
-        print(f"   Bilingual PDF ({a.bilingual}, trang gốc thật): output/{dual.name}")
     if a.pages:
-        keep_selected_pages(out_dir / f"{pdf.stem}-vi.pdf", a.pages)
-        repo_dual = out_dir / f"{pdf.stem}-vi-dual.pdf"
-        if not own_dual and bil and repo_dual.exists():
-            keep_selected_pages(repo_dual, a.pages, 2 if a.bilingual == "alternating" else 1)
-        print(f"   Các file trong output/ chỉ gồm trang {a.pages} (để trống PAGES để dịch cả file)")
+        keep_selected_pages(mono, a.pages)
+        if not own_dual and bil and dual.exists():
+            keep_selected_pages(dual, a.pages, 2 if a.bilingual == "alternating" else 1)
 
-    n_missing = sum(1 for _ in missing.open(encoding="utf-8")) if missing.exists() else 0
+    review = stage / f"{pdf.stem}-can-xem-lai.jsonl"
     if failures:
-        fp = out_dir / f"{pdf.stem}-can-xem-lai.jsonl"
-        with fp.open("w", encoding="utf-8") as f:
+        with review.open("w", encoding="utf-8") as f:
             for r in failures:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        print(f"   {len(failures)} đoạn không qua kiểm tra → output/{fp.name}")
+    replaced = publish([p for p in (mono, dual, review) if p.exists()], out_dir,
+                       stale=[out_dir / review.name])
+    print(f"   Translated PDF: output/{mono.name}")
+    if dual.exists():
+        print(f"   Bilingual PDF ({a.bilingual}{', trang gốc thật' if own_dual else ''}): output/{dual.name}")
+    if a.pages:
+        print(f"   Các file trong output/ chỉ gồm trang {a.pages} (để trống PAGES để dịch cả file)")
+    if replaced:
+        print(f"   Đã thay {replaced} file cũ cùng tên (file cũ nằm trong Thùng rác của Google Drive)")
+    if failures:
+        print(f"   {len(failures)} đoạn không qua kiểm tra → output/{review.name}")
+
+    n_missing = sum(1 for _ in missing.open(encoding="utf-8")) if missing.exists() else 0
     print(f"\n{'✅' if not n_missing else '⚠️ '} Xong: {len(srcs) - n_missing}/{len(srcs)} đoạn đã dịch."
           + (f" {n_missing} đoạn còn tiếng Anh — chạy lại ô này để dịch bù." if n_missing else ""))
     if stopped:

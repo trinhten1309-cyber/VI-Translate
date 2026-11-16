@@ -27,10 +27,14 @@
   failover, glossary checks, RapidOCR line layers for image-only scans
   (`ocr_layer.py`: no angle classifier, a failed line is re-read on its own
   crop, vertical tabs and still-failing lines stay as pixels, bold from stroke
-  width), repainting with the dominant ring colour over a margin that spares
-  table rules,
-  rebuild of image PDFs with an invisible OCR layer,
-  bundled OFL Cabin fonts). It drives `scripts/translate_pdf.py` through the
+  width, font size from the measured ink band divided by the glyphs' own em
+  height), repainting with the dominant ring colour (bins pooled against JPEG
+  tint, per-channel mode) while thin long horizontal rules are restored from
+  the unpainted image, rebuild of image PDFs with an invisible OCR layer in the
+  translation font (header/footer lines rebuilt only when they hold words),
+  bundled OFL Cabin fonts; outputs are staged in the work folder and published
+  by deleting the old file first so Google Drive gives them a new id and a
+  fresh preview). It drives `scripts/translate_pdf.py` through the
   handoff engine and never imports engine internals except the handoff
   placeholder validators; `tests/test_colab_tools.py` covers it and skips the
   provider tests when `openai` is absent.

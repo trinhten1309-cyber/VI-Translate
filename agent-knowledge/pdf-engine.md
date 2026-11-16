@@ -178,6 +178,14 @@ marker, and sent Mac users off to reinstall a complete app.
   white boxes it draws over translated text on scanned pages. Use it only when
   the picture text was already removed (for example `colab/rebuild_text_layer.py`);
   otherwise the source ink shows through.
+- `--translate-all-scan-text` sets `VI_TRANSLATE_ALL_SCAN_TEXT`; on scanned
+  pages (`scanned_pages`) the layout classes in `SCAN_TEXT_UNPROTECTED_CLASSES`
+  (`abandon`, `figure`, `isolate_formula`, `formula_caption`) no longer keep
+  text untranslated. `table` keeps its cell-split logic so columns are never
+  merged into one sentence. Use it only when the caller rebuilt the page's text
+  and wants every line translated (Colab passes it with `--no-scan-cover`); the
+  layout model labels boxed section banners and mark totals as `abandon` with
+  confidence near 0.4, so the result otherwise flips with tiny rendering changes.
 
 ## Colour and Emphasis
 

@@ -83,6 +83,11 @@ CUSTOM_FONT_ENV = {
 # Set to skip the white boxes drawn over translated text on scanned pages, for
 # input whose picture text has already been removed (a rebuilt OCR layer).
 SKIP_SCAN_COVER_ENV = "VI_SKIP_SCAN_COVER"
+# Set when the caller rebuilt the text of scanned pages and wants all of it
+# translated: the layout model's header/footer, figure and formula regions no
+# longer keep text on those pages untranslated (tables keep their cell logic).
+TRANSLATE_ALL_SCAN_TEXT_ENV = "VI_TRANSLATE_ALL_SCAN_TEXT"
+SCAN_TEXT_UNPROTECTED_CLASSES = frozenset({"abandon", "figure", "isolate_formula", "formula_caption"})
 
 logger = logging.getLogger(__name__)
 LARGE_DOCUMENT_SUBSET_PAGE_LIMIT = 200
@@ -462,8 +467,12 @@ def translate_patch(
                     np.clip(int(h - y0 + 1), 0, h - 1),
                 )
                 box[y0:y1, x0:x1] = i + 2
+            translate_all = (pageno in scanned_pages
+                             and bool(os.environ.get(TRANSLATE_ALL_SCAN_TEXT_ENV)))
             for i, d in enumerate(page_layout.boxes):
                 name = page_layout.names[int(d.cls)]
+                if translate_all and name in SCAN_TEXT_UNPROTECTED_CLASSES:
+                    continue
                 if name in vcls:
                     raw_x0, raw_y0, raw_x1, raw_y1 = (
                         float(value) for value in d.xyxy.squeeze()
