@@ -41,9 +41,30 @@ def unescape(text):
     return re.sub(r"\\(.)", lambda m: {"t": "\t", "n": "\n"}.get(m.group(1), m.group(1)), text)
 
 
+GAP = "\u21e5"  # ⇥
+GAP_RUN = re.compile(r"(?<=\S) {8,}(?=\S)")
+
+
 def compact(src):
-    """What the translator reads: runs of spaces from justified lines collapsed."""
-    return re.sub(r" {2,}", " ", src.strip())
+    """What the translator reads: runs of spaces from justified lines collapsed.
+
+    A long run is a blank to be filled in ("For the Transition Period From
+    ______ to"), not justification. It is shown as a tab arrow so the
+    translation keeps it where the source has it.
+    """
+    return re.sub(r" {2,}", " ", GAP_RUN.sub(f" {GAP} ", src.strip()))
+
+
+def restore_gaps(src, dst):
+    """DST with each tab arrow replaced by the long run of spaces SRC has there.
+
+    Returns None when DST has a different number of arrows than SRC has gaps.
+    """
+    runs = GAP_RUN.findall(re.sub(r"</?s\d>", "", src))
+    if dst.count(GAP) != len(runs):
+        return None
+    pieces = iter(runs)
+    return re.sub(rf" ?{GAP} ?", lambda _: next(pieces), dst)
 
 
 def make_batches(items, size=BATCH_SEGMENTS, chars=BATCH_CHARS):
@@ -67,6 +88,8 @@ def batch_text(number, total, items, glossary):
     for _, src in items:
         for r in terms_in(src, glossary):
             found[r["en"]] = r
+    if any(GAP in compact(src) for _, src in items):
+        lines.append(f"# {GAP} = khoảng trống để điền trong bản gốc: giữ nguyên {GAP} ở đúng chỗ trong bản dịch")
     if found:
         lines.append("# Thuật ngữ: " + "; ".join(
             f"{r['en']} = {'giữ nguyên' if r['keep_en'] == '1' else r['vi']}" for r in found.values()))
@@ -116,6 +139,11 @@ def judge(segments, answers, glossary):
         if i not in segments:
             errors[i] = ["id không có trong lô nào"]
             continue
+        restored = restore_gaps(segments[i], dst)
+        if restored is None:
+            errors[i] = [f"khoảng trống {GAP} bị đổi"]
+            continue
+        dst = restored
         problems = check(segments[i], dst, glossary)
         hard = [short_reason(p) for p in problems if not p.startswith("term ")]
         soft = [short_reason(p) for p in problems if p.startswith("term ")]

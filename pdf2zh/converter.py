@@ -3,7 +3,7 @@ import logging
 import math
 import re
 import unicodedata
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from enum import Enum, IntEnum
 from statistics import median
@@ -934,6 +934,46 @@ def source_line_extents(characters: Sequence[Any]) -> list[tuple[float, float, f
     return [tuple(line) for line in lines]
 
 
+def centred_source_axis(characters: Sequence[Any]) -> float | None:
+    """The shared centre line of a paragraph's source lines, when they are centred.
+
+    A two-line title ("BERT: Pre-training of Deep Bidirectional Transformers
+    for" / "Language Understanding") is centred line by line. Lines that share
+    a left edge (left-aligned or justified text) or a right edge (right-aligned)
+    are not centred, even when two of them happen to be equally wide.
+    """
+    lines = source_line_extents(characters)
+    if len(lines) < 2:
+        return None
+    centres = [(line[0] + line[1]) / 2 for line in lines]
+    axis = sum(centres) / len(centres)
+    size = max(line[3] for line in lines)
+    if max(abs(centre - axis) for centre in centres) > max(2.0, 0.25 * size):
+        return None
+    lefts = [line[0] for line in lines]
+    rights = [line[1] for line in lines]
+    if max(lefts) - min(lefts) < max(3.0, 0.5 * size) or max(rights) - min(rights) < max(3.0, 0.5 * size):
+        return None
+    return axis
+
+
+def centre_drawn_lines(
+    operations: list[dict],
+    measure: Callable[[str, int, float], float],
+    axis: float,
+) -> None:
+    """Move each drawn line so its ink is centred on `axis`."""
+    extents = rendered_line_extents(operations, measure, 0.0, defaultdict(float))
+    lines = sorted({values["lidx"] for values in operations if values["type"] == OpType.TEXT})
+    shifts = {
+        index: axis - (left + right) / 2
+        for index, (left, right, _baseline, _size) in zip(lines, extents)
+    }
+    for values in operations:
+        if values["type"] == OpType.TEXT and values["lidx"] in shifts:
+            values["x"] = float(values["x"]) + shifts[values["lidx"]]
+
+
 def underline_operations(
     rules: Sequence[tuple[float, float, float, float, str, bool]],
     source_lines: dict[int, list[tuple[float, float, float, float]]],
@@ -1605,7 +1645,19 @@ class TranslateConverter(PDFConverterEx):
                             close_style(len(sstk) - 1)
                             new_paragraph(child, cls)
                         elif (
-                            child.x0 - xt.x1 > 4 * max(child.size, xt.size)
+                            (
+                                child.x0 - xt.x1 > 4 * max(child.size, xt.size)
+                                # After a check box, more than a word space
+                                # parts the next item: NVIDIA's "Large
+                                # accelerated filer ☒" stands 3.7 em from
+                                # "Accelerated filer ☐", and its "☐" 2 em from
+                                # "Smaller reporting company". "Yes ☒ No ☐"
+                                # keeps 0.3 em and stays one item.
+                                or (
+                                    xt.get_text() in CHECK_BOXES
+                                    and child.x0 - xt.x1 > max(child.size, xt.size)
+                                )
+                            )
                             and not starts_lower_line(child, xt)
                             and pstk[-1].orientation == IDENTITY_ORIENTATION
                             and pstk[-1].visible_length
@@ -2823,6 +2875,25 @@ class TranslateConverter(PDFConverterEx):
                     size *= scale
                     rescale_operations(ops_vals, scale, first_line_x, x0)
                     ink = operation_ink(ops_vals)
+
+            # A title centred line by line stays centred line by line.
+            if (
+                brk
+                and lidx > 0
+                and new != sstk[id]
+                and pstk[id].layout_bound is None
+                and pstk[id].orientation == IDENTITY_ORIENTATION
+                # IFRS 3's "(b) one combining entity ..." overhangs its second
+                # line by its label on the left and as much on the right.
+                and not LIST_LABEL_START.match(STYLE_TAG_PATTERN.sub("", sstk[id]))
+            ):
+                axis = centred_source_axis(pstk[id].source_chars)
+                if axis is not None:
+                    centre_drawn_lines(
+                        ops_vals,
+                        lambda character, style, glyph_size: output_font(character, style, glyph_size)[1],
+                        axis,
+                    )
 
             # Formula slack stays charged to the paragraph's own box, so a
             # formula in an already tight paragraph is still somewhat cramped.

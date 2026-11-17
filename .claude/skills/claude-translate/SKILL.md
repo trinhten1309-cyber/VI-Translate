@@ -59,6 +59,8 @@ tiếng Anh là lỗi engine cần báo lại.
 3. Thẻ `<b0></b0>`… giữ đủ, đúng thứ tự. `<s1>` đậm, `<s2>` nghiêng, `<s3>` đậm
    nghiêng: giữ đủ cặp, bao quanh cụm tiếng Việt tương ứng.
 4. Giữ `\n` và `\t` (viết đúng hai ký tự) nếu chúng có trong đoạn gốc.
+   `⇥` là khoảng trống để điền của bản gốc ("From ⇥ to"): giữ đúng số `⇥`, ở
+   chỗ tương ứng ("từ ⇥ đến"); thiếu hoặc thừa thì câu trả lời bị loại.
 5. Đoạn bắt đầu giữa câu (nối tiếp từ trang trước) thì dịch tiếp đúng phần đó.
 6. Văn phong giáo trình, không thêm, không bỏ ý. Giữ ký hiệu mục "(a)", "B27".
 

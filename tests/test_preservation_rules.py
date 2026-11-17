@@ -588,6 +588,51 @@ class FinancialStatementTests(unittest.TestCase):
         self.assertFalse(ends_with_check_box("x {v0}", [star]))
         self.assertFalse(ends_with_check_box("Smaller reporting company", [box]))
 
+    def test_a_title_centred_line_by_line_stays_centred(self):
+        """BERT's two-line title was drawn as a left-aligned block."""
+        from pdf2zh.converter import OpType, centre_drawn_lines, centred_source_axis
+
+        def glyphs(*lines, size=14.0):
+            out = []
+            for baseline, x0, x1 in lines:
+                out.append(SimpleNamespace(get_text=lambda: "A", matrix=(1, 0, 0, 1, x0, baseline), size=size, x0=x0, x1=x0 + 5))
+                out.append(SimpleNamespace(get_text=lambda: "A", matrix=(1, 0, 0, 1, x1 - 5, baseline), size=size, x0=x1 - 5, x1=x1))
+            return out
+
+        self.assertAlmostEqual(centred_source_axis(glyphs((700, 100, 500), (683, 200, 400))), 300.0)
+        # Left-aligned, justified and right-aligned lines are not centred.
+        self.assertIsNone(centred_source_axis(glyphs((700, 100, 500), (683, 100, 300))))
+        self.assertIsNone(centred_source_axis(glyphs((700, 100, 500), (683, 100, 500))))
+        self.assertIsNone(centred_source_axis(glyphs((700, 100, 500), (683, 300, 500))))
+        self.assertIsNone(centred_source_axis(glyphs((700, 100, 500))))
+
+        operations = [
+            {"type": OpType.TEXT, "x": 100.0, "size": 10.0, "lidx": 0, "text": "abcd", "width_em": 30.0},
+            {"type": OpType.TEXT, "x": 100.0, "size": 10.0, "lidx": 1, "text": "ab", "width_em": 10.0},
+        ]
+        centre_drawn_lines(operations, lambda character, style, size: size, 300.0)
+        self.assertEqual([values["x"] for values in operations], [150.0, 250.0])
+
+    def test_a_blank_to_fill_survives_translation(self):
+        """Microsoft's "For the Transition Period From ______ to" lost its
+        blank: the translator only saw "From to"."""
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "colab"))
+        import claude_translate
+
+        source = "<s1>For the Transition Period From                  to</s1>"
+        self.assertEqual(claude_translate.compact(source), "<s1>For the Transition Period From ⇥ to</s1>")
+        self.assertEqual(
+            claude_translate.restore_gaps(source, "<s1>Cho kỳ chuyển tiếp từ ⇥ đến</s1>"),
+            "<s1>Cho kỳ chuyển tiếp từ                  đến</s1>",
+        )
+        self.assertIsNone(claude_translate.restore_gaps(source, "<s1>Cho kỳ chuyển tiếp từ đến</s1>"))
+        # Justified lines keep collapsing to one space.
+        self.assertEqual(claude_translate.compact("a  b    c"), "a b c")
+        self.assertEqual(claude_translate.restore_gaps("a  b", "x y"), "x y")
+
     def test_link_underlines_follow_the_translated_line(self):
         """Contents links kept their English length, ran past the Vietnamese
         words and cut through the dot under "ụ"."""

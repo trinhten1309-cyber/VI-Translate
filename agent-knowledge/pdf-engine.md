@@ -103,6 +103,16 @@ marker, and sent Mac users off to reinstall a complete app.
 - A translated one-line paragraph centred on the page and not starting at the
   left margin stays centred (`centred_line_x`) when it fits between the
   page's prose margins.
+- A wrapped translation whose source lines share one centre and neither a
+  left nor a right edge (`centred_source_axis`) has each drawn line centred
+  on that axis (`centre_drawn_lines`): BERT's two-line title, Attention's
+  notice, Apple's "(State or other jurisdiction / of incorporation ...)".
+  Not in table cells, and not for a paragraph that starts with a list label:
+  IFRS 3's "(b) ..." overhangs its second line by about as much on each side.
+- Claude batches show a run of 8+ source spaces (a blank to fill in,
+  "Transition Period From ______ to") as `⇥`; `finish` puts the source run
+  back and rejects an answer with a different number of arrows. Runs of 2-4
+  spaces are justification and still collapse to one.
 - A line holding only a space under a paragraph is skipped: it made a
   one-line paragraph a wrapped one, two lines tall, set at the English width.
 - A table cell is text when it holds a date ("Apr 26, 2026"), words joined by
@@ -153,7 +163,9 @@ marker, and sent Mac users off to reinstall a complete app.
   end apart, a one-line heading whose next line changes style, and a short
   label line such as "Appendix A" each start a paragraph; not inside table
   cells. A line ending on a check box ends its item, and a four-em gap on
-  one line parts two columns.
+  one line parts two columns; after a check box, a gap wider than one em
+  already parts the next item (NVIDIA's cover row, 2-3.7 em apart), while
+  "Yes ☒ No ☐" (0.3 em) stays one item.
 - List-label paragraphs keep a hanging indent: wrapped lines start at the
   source's second-line x and the first line tabs to it after the label.
 - Single lines get no overflow allowance; a word wider than the measure

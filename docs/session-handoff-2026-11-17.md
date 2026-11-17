@@ -41,7 +41,8 @@ Ngày 17/11/2026. Tài liệu này để mở một phiên Claude mới và làm
 - Test: `.venv/bin/python -m unittest discover -s tests -q` cho 576 test.
   Có **5 lỗi cũ có sẵn** do môi trường (thiếu module `websocket`, thiếu font
   hoặc trình duyệt cho test Google). Không phải hồi quy, đừng mất công sửa.
-- Thiết lập máy mới: `python3 -m venv .venv && .venv/bin/pip install -r requirements-ocr.txt`.
+- Thiết lập máy mới: `python3.12 -m venv .venv && .venv/bin/pip install -r requirements-ocr.txt`
+  (`babeldoc==0.2.33` chỉ cài được trên Python 3.10–3.12).
   Mô hình bố cục tự tải ở lần chạy đầu. Font Cabin nằm sẵn trong `colab/fonts/`.
 
 ### Quy tắc dự án phải tuân theo (từ `CLAUDE.md` / `agent-knowledge/index.md`)
@@ -249,10 +250,11 @@ Bản soát 38 mục của người dùng: các mục P0 đã sửa hết. Còn 
 | #26 | Tiêu đề cột ngày không thống nhất ("Ngày 28 tháng 3, 2026" so với "28/3/2026") | Sửa câu dịch (sua) và thêm quy ước vào glossary |
 | #28 | Font Cabin khác Arial hoặc serif của bản gốc | Quyết định sản phẩm, chưa làm |
 | #29 | "Ký bởi: /s/ …" lệch so với "By:" (NVIDIA tr.41) | Chưa chẩn đoán |
-| — | Bìa Microsoft: "Cho kỳ chuyển tiếp từ đến" mất khoảng trống giữa "từ" và "đến" (bản gốc dùng dấu cách, không có gạch) | Giữ chuỗi dấu cách dài làm tab |
-| — | Bìa NVIDIA: hàng ô đánh dấu "Công ty nộp hồ sơ nhanh quy mô lớn ☒ …" gộp thành một đoạn | Tách ở khoảng trống > 4 em sau ô đánh dấu (formula) |
-| — | Tiêu đề hai dòng của bài báo BERT chưa căn giữa | `centred_line_x` mới xử lý tiêu đề một dòng |
 | — | Bộ kiểm tự động người dùng đề xuất chưa làm: tỉ lệ cỡ chữ VI/EN < 0,8, số dòng và lề, độ dài gạch, số đoạn dính nhau, chữ tràn mép trang | Viết thành script trong `scripts/` dựa trên `audit_untranslated.py` |
+
+Đã sửa ở phiên 2 (nhánh `claude/new-session-utrvcc`): khoảng trống "từ ⇥ đến"
+của bìa Microsoft (ký hiệu `⇥` trong lô), hàng ô đánh dấu bìa NVIDIA (tách sau
+ô đánh dấu khi khoảng trống > 1 em), tiêu đề nhiều dòng căn giữa (BERT).
 
 Không phải lỗi (đã giải thích với người dùng): #25 (số trang Microsoft nằm
 đúng vị trí gốc), #37 ("continued..." là "còn tiếp…", "...continued" là
