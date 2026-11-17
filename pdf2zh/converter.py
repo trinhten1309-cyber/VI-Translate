@@ -24,6 +24,15 @@ from tenacity import (
     wait_exponential,
 )
 
+from pdf2zh.paragraph_format import (
+    collapse_doubled_spaces,
+    first_line_tab,
+    hanging_lead,
+    justify_operations,
+    lead_end,
+    opens_with_lead,
+    source_alignment,
+)
 from pdf2zh.rules import (
     CONTINUING_WORDS,
     is_bullet_character,
@@ -1127,6 +1136,32 @@ def ends_with_check_box(segment: str, formulas: Sequence[Sequence[Any]]) -> bool
     return bool(glyphs) and all(glyph in CHECK_BOXES for glyph in glyphs)
 
 
+def line_opens_with_lead(head: Any) -> bool:
+    """Whether the line that HEAD starts opens with a label and a tab."""
+    if head is None:
+        return False
+    return opens_with_lead(
+        getattr(head, "first_word", ""),
+        getattr(head, "first_word_end", None),
+        getattr(head, "next_word_x0", None),
+        float(getattr(head, "size", 0.0)),
+    )
+
+
+def starts_sibling_item(head: Any, opening: Any) -> bool:
+    """Whether a line is the next item of the list whose item is open.
+
+    IFRS 3's "(d) by providing ..." and "(e) without transferring ..." are one
+    line apart, too close for a gap to part them. Both open with a label and a
+    tab in the same column, which is what makes them siblings.
+    """
+    if head is None or opening is None or getattr(opening, "line_head", None) is not opening:
+        return False
+    if abs(float(head.x0) - float(opening.x0)) > max(1.0, 0.15 * float(head.size)):
+        return False
+    return line_opens_with_lead(head) and line_opens_with_lead(opening)
+
+
 def starts_lower_line(character: Any, previous: Any) -> bool:
     """Whether a glyph stands wholly below the glyph before it.
 
@@ -1155,6 +1190,9 @@ class Paragraph:
         # Upright glyphs, kept to redraw a paragraph exactly as the source
         # set it when it is not prose (a column of paragraph numbers).
         self.source_chars: list[LTChar] = []
+        # The first glyph of the paragraph's first line, which knows whether
+        # that line opens with a label (`opens_with_lead`).
+        self.opening: LTChar | None = None
         # Rotated text that cannot be rebuilt safely is drawn from its source
         # glyphs, together with the protected glyphs it held.
         self.replay_source = False
@@ -1479,6 +1517,7 @@ class TranslateConverter(PDFConverterEx):
                     child.matrix,
                 )
             )
+            pstk[-1].opening = child
 
         # Each region's own line pitch, so that ordinary 1.5 line spacing is not
         # mistaken for the gap between list items.
@@ -1513,6 +1552,8 @@ class TranslateConverter(PDFConverterEx):
                     child.line_opening = ""
                     child.first_word_end = None
                     child.first_word_done = False
+                    child.next_word_x0 = None
+                    child.first_word = ""
                     child.line_x1 = child.x1
                     child.line_text = ""
                     child.line_styles = set()
@@ -1533,8 +1574,12 @@ class TranslateConverter(PDFConverterEx):
                                 and child.x0 - previous_glyph.x1 > child.size * 0.2):
                             # A gap with no space glyph ends the word too.
                             line_start.first_word_done = True
+                            line_start.next_word_x0 = child.x0
                         else:
                             line_start.first_word_end = child.x1
+                            line_start.first_word += child.get_text()
+                    elif line_start.next_word_x0 is None and child.get_text().strip():
+                        line_start.next_word_x0 = child.x0
                 previous_glyph = child
         region_pitch: dict[int, float | None] = {}
         for region, glyphs in region_baselines.items():
@@ -1687,6 +1732,12 @@ class TranslateConverter(PDFConverterEx):
                             if cls not in ocr_paragraphs and pstk[-1].text_length > 1 and (
                                 line_changes_size(child.get_text(), child.size, pstk[-1].size)
                                 or ends_with_check_box(sstk[-1], var)
+                                or (
+                                    int(cls) not in page_cell_bounds
+                                    and starts_sibling_item(
+                                        getattr(child, "line_head", None), pstk[-1].opening
+                                    )
+                                )
                                 or (
                                     int(cls) not in page_cell_bounds
                                     and heading_lines_part(
@@ -2375,6 +2426,9 @@ class TranslateConverter(PDFConverterEx):
             size: float = pstk[id].size
             brk: bool = pstk[id].brk
 
+            if new != sstk[id]:
+                new = collapse_doubled_spaces(new)
+
             if pstk[id].orientation not in (None, IDENTITY_ORIENTATION):
                 ops_list.extend(render_rotated_text(pstk[id], sstk[id], new))
                 continue
@@ -2522,21 +2576,41 @@ class TranslateConverter(PDFConverterEx):
                 x = first_word_start(new, x, x0, x1, size, output_font, vlen)
 
             hang_x0 = getattr(pstk[id], "hang_x0", None)
+            tab_at = -1
             if (
                 brk
                 and hang_x0 is not None
                 and pstk[id].layout_bound is None
                 and hang_x0 > x + 0.5 * size
                 and hang_x0 < x1 - 4 * size
-                and LIST_LABEL_START.match(new)
             ):
                 # "(a) recognises and measures ..." wraps under its text, not
                 # under "(a)", as the source does, and its first line's text
-                # starts at the same tab stop.
-                x0 = hang_x0
-                tab_at = LIST_LABEL_START.match(new).end() - 1
-            else:
-                tab_at = -1
+                # starts at the same tab stop. The label is read from where the
+                # source glyphs stand (`hanging_lead`), so "(a)<s1> Input:",
+                # "B12D" and "1." hang alike; the label pattern is the fallback.
+                lead = hanging_lead(getattr(pstk[id], "source_chars", ()), hang_x0)
+                if lead is not None:
+                    tab_at = lead_end(new, lead)
+                if tab_at < 0 and LIST_LABEL_START.match(new):
+                    tab_at = LIST_LABEL_START.match(new).end() - 1
+                if tab_at >= 0:
+                    x0 = hang_x0
+            elif (
+                not brk
+                and new != sstk[id]
+                and pstk[id].layout_bound is None
+                and pstk[id].orientation == IDENTITY_ORIENTATION
+            ):
+                # A one-line item keeps the tab after its label too: "(d)
+                # bằng cách ..." had run on from "(d)" with one space. Only
+                # when the line still fits after the tab.
+                tab = first_line_tab(pstk[id].source_chars)
+                if tab is not None and tab[1] > x + 0.5 * size:
+                    candidate = lead_end(new, tab[0])
+                    if candidate >= 0 and tab[1] + measure_styled_text(new[candidate + 1:], size) <= x1 + 0.5:
+                        tab_at = candidate
+                        hang_x0 = tab[1]
             # A word wider than the measure is never cut: "29/3/2025" in a
             # 36 pt column broke as "29/3/202" / "5". The size comes down
             # until the longest word fits.
@@ -2549,6 +2623,10 @@ class TranslateConverter(PDFConverterEx):
                 label_width = measure_styled_text(new[:tab_at], size)
                 wrap_x = x + max(0.0, hang_x0 - (x + label_width)) - measure_styled_text(" ", size)
                 wrap_x = max(x, wrap_x)
+            # Line breaks the source already had end a line that is never
+            # stretched; the breaks added below are soft.
+            hard_breaks = {index for index, character in enumerate(new) if character == "\n"}
+            hard_line_ends: set[int] = set()
             # Pre-compute word-boundary line breaks to avoid mid-word splits
             if brk:
                 def _measure_char(
@@ -2688,6 +2766,8 @@ class TranslateConverter(PDFConverterEx):
                         ptr += 1
                         continue
                     if ch == '\n':  # Forced line break from word-wrap pre-computation
+                        if ptr in hard_breaks:
+                            hard_line_ends.add(lidx)
                         if cstk:
                             ops_vals.append({
                                 "type": OpType.TEXT,
@@ -2894,6 +2974,27 @@ class TranslateConverter(PDFConverterEx):
                         lambda character, style, glyph_size: output_font(character, style, glyph_size)[1],
                         axis,
                     )
+
+            # A justified source paragraph is set justified: every line but
+            # the last, and but one the source itself broke, ends at the
+            # measure. Left-aligned translations of justified text were the
+            # most common difference left between the two columns.
+            if (
+                brk
+                and lidx > 0
+                and new != sstk[id]
+                and pstk[id].layout_bound is None
+                and pstk[id].orientation == IDENTITY_ORIENTATION
+                and source_alignment(pstk[id].source_chars) == "justify"
+            ):
+                justify_operations(
+                    ops_vals,
+                    lambda character, style, glyph_size: output_font(character, style, glyph_size)[1],
+                    raw_string,
+                    x1,
+                    hard_line_ends | {lidx},
+                    lambda values: values["type"] == OpType.TEXT,
+                )
 
             # Formula slack stays charged to the paragraph's own box, so a
             # formula in an already tight paragraph is still somewhat cramped.

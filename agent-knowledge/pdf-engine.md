@@ -332,6 +332,47 @@ marker, and sent Mac users off to reinstall a complete app.
   a lone token such as `2` receive a bounded, gentle font reduction to balance
   the wrap without affecting ordinary body paragraphs.
 
+## Paragraph Format Framework
+
+`pdf2zh/paragraph_format.py` is the engine's conceptual framework for
+paragraph layout, in the sense of the IFRS Conceptual Framework: where no
+specific rule in `converter.py` covers a case, these principles decide, and a
+new rule should be written as a principle here before it is written as a
+special case there. Read a paragraph's form off its source geometry, then set
+the translation in the same form.
+
+1. Faithful form: first-line x, wrapped-line x, the tab after a label, and
+   alignment (left, justified, centred) come from the source glyphs.
+2. Geometry over spelling: a label is whatever stands before a gap wider
+   than one em on the first line (`first_line_tab`), or before the x where
+   the wrapped lines start (`hanging_lead`), at most 8 characters. "(a)",
+   "(a)<s1> Input:", "B12D", "1." and "Note 3" are found the same way; the
+   `LIST_LABEL_START` pattern is only the fallback.
+3. Siblings stay alike: a line that opens with a label and tab in the column
+   of the open paragraph's own label starts a sibling (`starts_sibling_item`
+   in the converter). IFRS 3 had seven such pairs joined, "(d) ...; or (e) ...".
+4. Prudence: one source line, a table cell, a tab the line cannot afford, or
+   a justified gap wider than 0.6 em keep the plain left-aligned form.
+
+What it sets:
+- Hanging indent: the translation's label is found across style tags
+  (`lead_end`), its text tabs to the source text x, wrapped lines start there.
+- One-line items keep the tab after the label when the line still fits.
+- Justification (`source_alignment` + `justify_operations`): when every source
+  line but the last ends at one right edge, over at least two lines that each
+  fill 60% of the measure, every drawn line but the last, and but one the
+  source itself broke, is stretched to the measure by splitting runs at
+  spaces. Not in table cells.
+- `collapse_doubled_spaces`: a space on each side of a style tag is one space;
+  runs of 8+ (blanks to fill) stay.
+
+Considered and rejected: converting the PDF to DOCX first (pdf2docx +
+LibreOffice). On the untranslated pages alone it misplaced hanging labels
+(IFRS 3 p.27 "net", "of" pushed into the margin), dropped NVIDIA's "Other
+Assets" column and cut table labels ("Certificat"), and its install upgrades
+PyMuPDF past the pinned 1.25.2. Its idea, paragraph properties (indent,
+hanging, alignment), is what this framework reads from geometry instead.
+
 ## Caller-Chosen Output Font
 
 - `--font`/`--font-bold`/`--font-italic`/`--font-bold-italic` (CLI) set
