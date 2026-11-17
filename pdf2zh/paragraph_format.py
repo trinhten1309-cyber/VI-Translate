@@ -127,6 +127,22 @@ def first_line_tab(characters: Iterable[Any]) -> tuple[str, float] | None:
     return None
 
 
+def stands_at_tab_stop(x0: float, baseline: float, characters: Iterable[Any], size: float) -> bool:
+    """Whether something at X0 on a line stood a tab-wide gap after the text before it.
+
+    Apple's cover sets "Large accelerated filer" and its check box in two
+    columns; the box belongs at its own x, not glued to the label.
+    """
+    before = [
+        float(glyph.x1)
+        for glyph in characters
+        if glyph.get_text().strip()
+        and float(glyph.x1) <= x0 + 0.1
+        and abs(float(glyph.matrix[5]) - baseline) <= 0.3 * max(size, float(glyph.size))
+    ]
+    return bool(before) and x0 - max(before) > TAB_GAP_EM * size
+
+
 def lead_end(text: str, lead: str) -> int:
     """Index of the space after LEAD at the start of TEXT, or -1.
 

@@ -25,6 +25,7 @@ from tenacity import (
 )
 
 from pdf2zh.paragraph_format import (
+    stands_at_tab_stop,
     collapse_doubled_spaces,
     first_line_tab,
     hanging_lead,
@@ -2837,6 +2838,24 @@ class TranslateConverter(PDFConverterEx):
                 if brk and x + adv > x1 + 0.1 * size:
                     x = x0
                     lidx += 1
+                if (
+                    vy_regex
+                    and not brk
+                    and pstk[id].layout_bound is None
+                    and pstk[id].orientation == IDENTITY_ORIENTATION
+                    and stands_at_tab_stop(
+                        float(var[vid][0].x0), float(var[vid][0].matrix[5]),
+                        pstk[id].source_chars, pstk[id].size,
+                    )
+                ):
+                    # A protected glyph that stood in a column of its own
+                    # keeps its tab stop when the text before it leaves room,
+                    # and otherwise at least a word space.
+                    stop = float(var[vid][0].x0)
+                    if x < stop - 0.5 and stop + adv <= x1 + 0.5:
+                        x = stop
+                    elif x + 0.3 * size + adv <= x1 + 0.5 and not re.search(r"\s(</?s\d>)*$", new[:ptr - len(vy_regex.group(0))]):
+                        x += 0.3 * size
                 if vy_regex:
                     fix = 0
                     if fcur is not None:

@@ -12,6 +12,7 @@ from pdf2zh.paragraph_format import (
     justify_operations,
     lead_end,
     opens_with_lead,
+    stands_at_tab_stop,
     source_alignment,
 )
 
@@ -63,6 +64,16 @@ class LabelTests(unittest.TestCase):
         self.assertFalse(opens_with_lead("(e)", 189.0, 192.0, 8.5))
         self.assertFalse(opens_with_lead("combination", 189.0, 208.0, 8.5))
         self.assertFalse(opens_with_lead("(e)", None, 208.0, 8.5))
+
+
+class TabStopTests(unittest.TestCase):
+    def test_a_check_box_in_its_own_column_stands_at_a_tab_stop(self):
+        """Apple's "Large accelerated filer" and its box sit 37 pt apart."""
+        label = line("filer", 30, 700)
+        self.assertTrue(stands_at_tab_stop(138.0, 700, label, 8.0))
+        self.assertFalse(stands_at_tab_stop(52.0, 700, label, 8.0))
+        # Nothing before it on its line: no stop to keep.
+        self.assertFalse(stands_at_tab_stop(138.0, 650, label, 8.0))
 
 
 class AlignmentTests(unittest.TestCase):

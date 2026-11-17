@@ -363,6 +363,11 @@ What it sets:
   fill 60% of the measure, every drawn line but the last, and but one the
   source itself broke, is stretched to the measure by splitting runs at
   spaces. Not in table cells.
+- Tab stops (`stands_at_tab_stop`): a protected glyph (check box, formula)
+  that stood more than one em after the text before it, in a one-line
+  paragraph, is drawn at its source x when the translation leaves room, and
+  otherwise a word space after the text, never glued to it (Apple and
+  NVIDIA cover check boxes).
 - `collapse_doubled_spaces`: a space on each side of a style tag is one space;
   runs of 8+ (blanks to fill) stay.
 
