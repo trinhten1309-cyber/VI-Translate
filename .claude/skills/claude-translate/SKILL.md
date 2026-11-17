@@ -35,6 +35,18 @@ Sửa lỗi: lấy dòng gốc của các id bị báo bằng
 `grep -P "^(12|44)\t" BASE/claude/<tên>/batches/*.txt`, ghi bản sửa vào
 `answers/sua-1.txt` (cùng dạng `id<TAB>bản dịch`), rồi chạy lại `finish`. File
 `sua-*` đứng sau `lo-*` nên thay câu trả lời cũ; các lô khác giữ nguyên.
+`sua-*` chỉ để sửa câu dịch. Chữ còn tiếng Anh vì engine không tách được (tiêu
+đề bảng, đầu trang, tiêu đề báo cáo) phải sửa trong `pdf2zh/`, không sửa tay.
+
+Kiểm tra chữ còn sót sau khi dựng:
+
+```bash
+.venv/bin/python scripts/audit_untranslated.py BASE/output/<tên>-vi.pdf --min-words 1
+```
+
+Danh sách in từng trang các dòng còn chữ Latin không dấu. Tên người, email,
+chữ trong hình, trang bìa và mục lục là bình thường; tiêu đề cột, ngày ở đầu
+cột, đầu trang hay tiêu đề báo cáo còn tiếng Anh là lỗi engine cần báo lại.
 
 ## Quy tắc dịch
 

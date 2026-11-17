@@ -376,9 +376,58 @@ class FinancialStatementTests(unittest.TestCase):
             (108, 93, 435, 103, "size of convolutions and r the size of the neighborhood."),
         ]
         self.assertEqual(running_header_lines(caption, 612, 792), [])
+        # A two-word label over another is two paragraphs.
+        label = [(286, 50, 310, 58, "PART I"), (288, 58, 309, 67, "Item 1"), (20, 80, 300, 90, "Body")]
+        self.assertEqual(len(running_header_lines(label, 596, 842)), 2)
         # Prose across the measure is not centred text.
         prose = [(18, 20, 595, 30, "We expect our Rubin platform"), (18, 31, 595, 41, "to start shipping")]
         self.assertEqual(running_header_lines(prose, 612, 792), [])
+
+    def test_dates_and_slashed_words_are_table_text(self):
+        from pdf2zh.rules import should_translate_table_cell
+        for text in ("Apr 26, 2026", "December 31, 2025", "June 2025", "Schedule/Form",
+                     "ASSETS:", "LIABILITIES AND SHAREHOLDERS’ EQUITY:"):
+            self.assertTrue(should_translate_table_cell(text), text)
+        for text in ("Apr", "MAY", "A1/B2", "kg/m3", "10.1+", "IFRS", "USD", "XYZWQ"):
+            self.assertFalse(should_translate_table_cell(text), text)
+
+    def test_a_table_top_leaves_the_descenders_above_it(self):
+        """Page 20: "Three Months Ended" at 104-112 pt over a table at 114 pt."""
+        from pdf2zh.rules import table_top_below_line
+        heading = _words(0, 104, (450, "Three Months Ended"))
+        x0, top, x1, bottom = table_top_below_line((16, 114, 596, 234), heading)
+        self.assertGreater(top, 114)
+        self.assertLessEqual(top, 114 + 8 / 3)
+        # A line inside the table, or beside it, does not move the edge.
+        self.assertEqual(table_top_below_line((16, 114, 596, 234), _words(0, 120, (450, "Total")))[1], 114)
+        self.assertEqual(table_top_below_line((300, 114, 596, 234), _words(0, 104, (18, "Note")))[1], 114)
+
+    def test_unrepeated_page_furniture_is_text(self):
+        from pdf2zh.rules import abandon_is_unrepeated_text, repeated_page_lines
+        header = ("NVIDIA Corporation and Subsidiaries", 20.0)
+        pages = [[header, ("Part I. Financial Information", 71.0)], [header], [header, ("12", 590.0)]]
+        repeated = repeated_page_lines(pages)
+        signature = [(17, 585, 120, 594, "/s/ COLETTE M. KRESS"),
+                     (17, 596, 90, 605, "Colette M. Kress"),
+                     (17, 607, 227, 616, "Executive Vice President and Chief Financial Officer")]
+        self.assertTrue(abandon_is_unrepeated_text((17, 585, 227, 619), signature, repeated))
+        running = [(235, 20, 378, 29, "NVIDIA Corporation and Subsidiaries")]
+        self.assertFalse(abandon_is_unrepeated_text((173, 20, 439, 52), running, repeated))
+        # A long block set aside is a list carried over (a contents page), not a passage.
+        contents = [(137, 127 + 14 * n, 300, 136 + 14 * n, f"Contents entry number {n}") for n in range(8)]
+        self.assertFalse(abandon_is_unrepeated_text((132, 125, 485, 255), contents, repeated))
+        # A page number is not a passage.
+        self.assertFalse(abandon_is_unrepeated_text((300, 588, 312, 598), [(301, 590, 311, 598, "12")], repeated))
+
+    def test_a_first_word_that_does_not_fit_starts_at_the_left_edge(self):
+        from pdf2zh.converter import first_word_start
+
+        def measure(character, style, size):
+            return character, size * 0.5
+
+        # "$ / Change": the line starts at the "$", 6 pt from the right edge.
+        self.assertEqual(first_word_start("<s1>Thay đổi $</s1>", 520, 495, 526, 8, measure, []), 495)
+        self.assertEqual(first_word_start("Thay đổi", 500, 495, 526, 8, measure, []), 500)
 
     def test_a_centred_line_stays_centred_when_translated(self):
         from pdf2zh.converter import centred_line_x

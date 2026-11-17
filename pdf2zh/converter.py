@@ -1997,6 +1997,18 @@ class TranslateConverter(PDFConverterEx):
                         ch, int(measure_style), pstk[id].size
                     )[1]
                     tmp_ptr += 1
+            # A one-line heading set right in its cell starts far from the
+            # cell's left edge: NVIDIA's "Total" column heading starts 30 pt
+            # into a 50 pt cell, and "Tổng cộng" had 18 pt, under half its
+            # size, so it stayed in English. It may take the cell's free room
+            # to its left, still ending where the source ended.
+            cell_left = (
+                pstk[id].layout_bound[0] if pstk[id].layout_bound is not None else x0
+            )
+            if orig_lines == 1 and not brk and new != sstk[id] and x > cell_left and total_new_width > x1 - x:
+                x = max(cell_left, min(x, pstk[id].x1 - total_new_width, x1 - total_new_width))
+                x0 = min(x0, x)
+                total_avail = paragraph_width_budget(x, x0, x1, orig_lines)
             if total_avail > 0 and total_new_width > total_avail * 1.05:
                 ratio = total_avail / total_new_width
                 if not brk and ratio < 0.5 and new != sstk[id]:
@@ -2020,6 +2032,8 @@ class TranslateConverter(PDFConverterEx):
                 )
                 if centred is not None:
                     x = centred
+            if x > x0:
+                x = first_word_start(new, x, x0, x1, size, output_font, vlen)
 
             # Pre-compute word-boundary line breaks to avoid mid-word splits
             if brk:
@@ -2348,6 +2362,57 @@ def available_height_below(
             continue  # a hairline touch is a different column, not a collision
         limit = max(limit, oy1)
     return max(y1 - limit, y1 - y0)
+
+
+def first_word_start(
+    text: str,
+    x: float,
+    left: float,
+    right: float,
+    size: float,
+    measure: Callable[[str, int, float], tuple[str, float]],
+    formula_widths: list[float],
+) -> float:
+    """Where a paragraph starts when its first word must fit on its first line.
+
+    A paragraph starts where its source did, and wrapped lines return to its
+    left edge. NVIDIA's column heading "$ / Change" starts at the "$", a few
+    points from the right of its cell; "Thay đổi $" had no room there for
+    "Thay", and the word was cut "Tha" / "y". Wrapping only happens at spaces,
+    so a first word that does not fit from the source start starts at the
+    left edge instead.
+    """
+    style = int(TextStyle.REGULAR)
+    width = 0.0
+    pointer = 0
+    seen_letter = False
+    while pointer < len(text):
+        tag = STYLE_TAG_PATTERN.match(text, pointer)
+        if tag:
+            closing, identifier = tag.groups()
+            style = int(TextStyle.REGULAR) if closing else int(identifier)
+            pointer = tag.end()
+            continue
+        formula = re.match(r"\{\s*v([\d\s]+)\}", text[pointer:], re.IGNORECASE)
+        if formula:
+            try:
+                width += formula_widths[int(formula.group(1).replace(" ", ""))]
+            except Exception:
+                pass
+            pointer += len(formula.group(0))
+            seen_letter = True
+            continue
+        character = text[pointer]
+        if character.isspace():
+            if seen_letter:
+                break
+        else:
+            seen_letter = True
+            width += measure(character, style, size)[1]
+        pointer += 1
+    if x + width > right + 0.1 * size and left + width <= right + 0.1 * size:
+        return left
+    return x
 
 
 def centred_line_x(

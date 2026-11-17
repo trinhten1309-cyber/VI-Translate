@@ -47,3 +47,8 @@ IFRS,IFRS,chung,1,tên chuẩn mực giữ nguyên
 IAS,IAS,chung,1,tên chuẩn mực giữ nguyên
 NCI,NCI,chung,1,viết tắt giữ nguyên
 PUP,PUP,chung,1,lợi nhuận chưa thực hiện; viết tắt giữ nguyên
+in millions,triệu,chung,0,"Đơn vị trong báo cáo tài chính; cùng nhãn ""(In millions)"" dùng cho cả số tiền và số cổ phiếu nên không thêm USD hay cổ phiếu"
+in billions,tỷ,chung,0,Đơn vị trong báo cáo tài chính
+unaudited,chưa kiểm toán,chung,0,
+three months ended,ba tháng kết thúc ngày,chung,0,Tiêu đề cột báo cáo quý
+condensed consolidated,hợp nhất tóm lược,chung,0,Báo cáo tài chính giữa niên độ (10-Q)

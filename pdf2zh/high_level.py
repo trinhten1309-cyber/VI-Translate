@@ -38,6 +38,8 @@ from pdf2zh.rules import (
     formula_regions,
     abandon_is_table_caption,
     abandon_outranked_by_text,
+    abandon_is_unrepeated_text,
+    repeated_page_lines,
     is_footnote_text,
     lines_crossing_region,
     overlapping_text_groups,
@@ -46,6 +48,7 @@ from pdf2zh.rules import (
     page_has_image,
     should_translate_table_cell,
     table_bounds_clear_of_text,
+    table_top_below_line,
     running_header_lines,
     table_heading_cells,
     text_aligned_table_cells,
@@ -426,6 +429,17 @@ def translate_patch(
 
     parser = PDFParser(inf)
     doc = PDFDocument(parser)
+    furniture = repeated_page_lines(
+        [
+            (
+                "".join(span["text"] for span in line.get("spans", ())),
+                float(line["bbox"][1]),
+            )
+            for block in source_page.get_text("dict")["blocks"]
+            for line in block.get("lines", [])
+        ]
+        for source_page in doc_zh
+    )
     with closing(device), tqdm.tqdm(total=total_pages) as progress:
         for pageno, page in enumerate(PDFPage.create_pages(doc)):
             if cancellation_event and cancellation_event.is_set():
@@ -552,6 +566,31 @@ def translate_patch(
                         for hx0, hy0, hx1, hy1 in header_bounds
                     ):
                         continue
+                    if name == "abandon" and abandon_is_unrepeated_text(
+                        (raw_x0, raw_y0, raw_x1, raw_y1),
+                        [
+                            (*line["bbox"], "".join(span["text"] for span in line.get("spans", ())))
+                            for block in page_blocks
+                            for line in block.get("lines", [])
+                            if abs(line.get("dir", (1, 0))[1]) < 0.5
+                        ],
+                        furniture,
+                    ):
+                        # It is a text region of its own, so that its short
+                        # stacked lines ("/s/ COLETTE M. KRESS" / "Colette M.
+                        # Kress" / the title) stay separate paragraphs.
+                        patch = box[
+                            np.clip(int(h - raw_y1 - 1), 0, h - 1):np.clip(int(h - raw_y0 + 1), 0, h - 1),
+                            np.clip(int(raw_x0 - 1), 0, w - 1):np.clip(int(raw_x1 + 1), 0, w - 1),
+                        ]
+                        patch[patch == 1] = i + 2
+                        page_class_bounds[i + 2] = (
+                            raw_x0,
+                            float(page_rect.height) - raw_y1,
+                            raw_x1,
+                            float(page_rect.height) - raw_y0,
+                        )
+                        continue
                     if name == "abandon" and abandon_is_table_caption(
                         (raw_x0, raw_y0, raw_x1, raw_y1),
                         [
@@ -576,6 +615,10 @@ def translate_patch(
                                 for other in page_layout.boxes
                                 if page_layout.names[int(other.cls)] == "plain text"
                             ],
+                        )
+                        raw_x0, raw_y0, raw_x1, raw_y1 = table_top_below_line(
+                            (raw_x0, raw_y0, raw_x1, raw_y1),
+                            doc_zh[page.pageno].get_text("words"),
                         )
                         model_table_bounds.append(
                             (raw_x0, raw_y0, raw_x1, raw_y1)

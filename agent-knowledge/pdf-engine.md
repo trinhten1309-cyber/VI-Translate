@@ -105,6 +105,26 @@ marker, and sent Mac users off to reinstall a complete app.
   page's prose margins.
 - A line holding only a space under a paragraph is skipped: it made a
   one-line paragraph a wrapped one, two lines tall, set at the English width.
+- A table cell is text when it holds a date ("Apr 26, 2026"), words joined by
+  a slash ("Schedule/Form"), or a capitalised word of five letters or more
+  with two vowels ("ASSETS:"); short capitals, digits and few vowels still
+  read as codes ("IFRS", "USD", "A1B2").
+- A table's top edge moves down out of the descenders of a line whose middle
+  is above it (`table_top_below_line`), at most a third of that line's
+  height: a glyph takes its region from its bottom-left corner, and the
+  protection pad caught NVIDIA's "Three Months Ended" above its table.
+- An `abandon` region whose lines do not recur at the same height on another
+  page, with two words or more on at most four lines, is the page's own text
+  (`abandon_is_unrepeated_text`, against `repeated_page_lines` of the whole
+  document) and becomes a text region of its own: a section title, a
+  signature block. Repeated running headers and footers, page numbers and
+  longer carried-over lists (a contents page continued) stay protected.
+- A paragraph whose first word does not fit between its source start and its
+  right edge starts at its left edge (`first_word_start`): wrapping happens
+  only at spaces, and the render loop otherwise cut the word ("Tha" / "y").
+  A one-line translation in a cell may start left of its source, as far as
+  the cell's left edge, still ending where the source ended ("Total" set at
+  the right of its cell).
   An `abandon` region within 16 pt above a model table and inside its width
   is that table's caption (`abandon_is_table_caption`) and is translated; a
   running header has other content between it and any table.

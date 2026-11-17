@@ -464,6 +464,39 @@ def table_bounds_clear_of_text(
     return x0, y0, x1, y1
 
 
+def table_top_below_line(
+    table_bounds: Sequence[float],
+    words: Iterable[Sequence[Any]],
+) -> tuple[float, float, float, float]:
+    """Lower a table's top edge out of the descenders of the line above it.
+
+    A glyph takes its region from its bottom-left corner, which sits on the
+    descender line. NVIDIA page 20 sets "Three Months Ended" at 104-112 pt
+    and the model's table starts at 114 pt; protection is painted a point
+    wider, and the glyph boxes reach below the word boxes, so the heading
+    fell inside the table and stayed in English while the same heading on
+    the table below it was translated. A line whose middle is above the
+    table's top keeps its descenders; the edge moves down at most a third of
+    that line's height.
+    """
+    x0, y0, x1, y1 = (float(value) for value in table_bounds)
+    top = y0
+    for word in words:
+        bounds = _rect(word)
+        if bounds is None:
+            continue
+        wx0, wy0, wx1, wy1 = bounds
+        if wx1 <= x0 or wx0 >= x1:
+            continue
+        height = wy1 - wy0
+        if height <= 0 or (wy0 + wy1) / 2 >= y0:
+            continue
+        reach = wy1 + height * 0.3 + 1.0
+        if reach > top:
+            top = min(reach, y0 + height / 3)
+    return x0, top, x1, y1
+
+
 FIGURE_PATTERN = re.compile(r"[$€£¥(]?[\d.,]*\d[\d.,]*%?\)?|[—–-]{1,2}|\$")
 FOOTNOTE_MARKER_PATTERN = re.compile(r"(?:\d{1,3}|[*\u2217\u2020\u2021\u00a7\u00b6]{1,3}|\([a-z0-9]{1,2}\))")
 # A footnote mark set tight against its first word: "\u2217Equal contribution",
@@ -644,7 +677,8 @@ def running_header_lines(
     chính ..."). Each line of such a header is its own paragraph, except where
     a centred title wraps: a line breaks deliberately when the next line's
     first word would still have fitted on it, when the next line is the wider
-    of the two, or when the next line is a parenthetical of its own
+    of the two, when the line is a label of two words or fewer ("PART I"
+    over "Item 1"), or when the next line is a parenthetical of its own
     ("(Unaudited)").
 
     The same block titles each statement ("NVIDIA Corporation and
@@ -708,12 +742,74 @@ def running_header_lines(
             # A wrapped line holds what the line above had no room for, so
             # it is not the wider of the two.
             wider = x1 - x0 > previous[2] - previous[0] + space
-            deliberate = fits or wider or (text.startswith("(") and text.endswith(")"))
+            # Two words or fewer is a label ("PART I" over "Item 1"), not the
+            # first line of a wrapped title.
+            label = len(previous[4].split()) <= 2
+            deliberate = fits or wider or label or (text.startswith("(") and text.endswith(")"))
         if deliberate:
             groups.append([])
         groups[-1].append((x0, y0, x1, y1))
         previous = line
     return groups
+
+
+def page_line_key(text: str, top: float) -> tuple[str, int] | None:
+    """A line's letters and its height on the page, to find repeated furniture."""
+    letters = re.sub(r"[^a-z]", "", text.lower())
+    if len(letters) < 3:
+        return None
+    return letters, int(round(top / 6.0))
+
+
+def repeated_page_lines(pages: Iterable[Iterable[tuple[str, float]]]) -> set[tuple[str, int]]:
+    """Lines that recur at the same height on two or more pages.
+
+    `pages` gives, for each page, its lines as (text, top). Running headers
+    and footers repeat where they stand; a section title or a signature
+    block does not.
+    """
+    seen: dict[tuple[str, int], int] = {}
+    for lines in pages:
+        keys = {key for text, top in lines if (key := page_line_key(text, top)) is not None}
+        for key in keys:
+            seen[key] = seen.get(key, 0) + 1
+    return {key for key, count in seen.items() if count >= 2}
+
+
+def abandon_is_unrepeated_text(
+    bounds: Sequence[float],
+    lines: Iterable[Sequence[Any]],
+    repeated: set[tuple[str, int]],
+) -> bool:
+    """Whether a region the model set aside as page furniture is a passage.
+
+    The model boxed NVIDIA's "Part I. Financial Information" (page 3) and the
+    signature blocks of its certifications ("Executive Vice President and
+    Chief Financial Officer") `abandon`, so they stayed in English. Furniture
+    repeats from page to page at the same height; text that appears once, with
+    two words or more on at most four lines, is the page's own and is
+    translated. `lines` are
+    (x0, y0, x1, y1, text) in top-down coordinates.
+    """
+    x0, y0, x1, y1 = (float(value) for value in bounds)
+    words = 0
+    inside = 0
+    for line in lines:
+        lx0, ly0, lx1, ly1 = (float(value) for value in line[:4])
+        cx, cy = (lx0 + lx1) / 2, (ly0 + ly1) / 2
+        if not (x0 <= cx <= x1 and y0 <= cy <= y1):
+            continue
+        text = str(line[4])
+        key = page_line_key(text, ly0)
+        if key is None:
+            continue
+        if key in repeated:
+            return False
+        inside += 1
+        words += len(re.findall(r"[A-Za-z]{2,}", text))
+    # A long block set aside is a list the page carries over, such as the end
+    # of a table of contents (IFRS 3 page 3), which stays with its first page.
+    return 0 < inside <= 4 and words >= 2
 
 
 def abandon_is_table_caption(
@@ -1118,16 +1214,37 @@ def words_by_cell(
     return owned
 
 
+MONTH_NAMES = (
+    "jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|"
+    "april|june|july|august|september|october|november|december"
+)
+DATE_CELL_PATTERN = re.compile(
+    rf"(?:(?:{MONTH_NAMES})\.?\s+\d{{1,2}},?\s+\d{{4}}|\d{{1,2}}\s+(?:{MONTH_NAMES})\.?,?\s+\d{{4}}"
+    rf"|(?:{MONTH_NAMES})\.?,?\s+\d{{4}})",
+    re.IGNORECASE,
+)
+SLASHED_WORDS_PATTERN = re.compile(r"[A-Za-z][a-z]{2,}(?:/[A-Za-z][a-z]{2,})+")
+
+
 def should_translate_table_cell(text: str) -> bool:
     """Return whether a cell contains natural-language text rather than codes.
 
     Product identifiers and numeric cells are safer left as original PDF glyphs.
     Natural-language labels in the supported source documents contain lowercase
     letters, including Unicode lowercase letters outside English.
+
+    A capitalised word of five letters or more with vowels is a heading word
+    ("ASSETS:"), not a code. A date is a heading, not a code: "Apr" is a short
+    capitalised token like a
+    unit, so NVIDIA's 10-Q kept 62 column dates ("Apr 26, 2026") in English
+    while every date in its prose was translated. Words joined by a slash
+    ("Schedule/Form") are words too.
     """
     value = " ".join(text.split())
     if not value:
         return False
+    if DATE_CELL_PATTERN.search(value) or SLASHED_WORDS_PATTERN.search(value):
+        return True
 
     def natural_token(token: str) -> bool:
         token = token.strip("()[]{}:;,\"'“”")
@@ -1141,7 +1258,14 @@ def should_translate_table_cell(text: str) -> bool:
         if len(letters) <= 2:
             return False
         if letters.isupper():
-            return False
+            # A capitalised heading word ("ASSETS:", "LIABILITIES AND
+            # SHAREHOLDERS' EQUITY:") reads as a word; a code is short, holds
+            # digits or has few vowels ("IFRS", "USD", "A1B2C").
+            return (
+                len(letters) >= 5
+                and sum(character in "AEIOUY" for character in letters) >= 2
+                and not any(character.isdigit() for character in token)
+            )
         if (
             any(character.isdigit() for character in token)
             or re.search(r"[a-z][A-Z]", token)
