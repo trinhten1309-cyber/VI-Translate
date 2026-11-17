@@ -141,6 +141,27 @@ marker, and sent Mac users off to reinstall a complete app.
   left edge too unless a protected glyph came first; a check box more than
   1.5 em left of its text stays a paragraph of its own. A protected run of
   spaces alone (`blank_run`) becomes one space instead of a formula.
+- Thin bars filled in any colour but white, and coloured stroked segments,
+  are taken out of the page stream by the interpreter (`take_underline`) and
+  handed to the converter on the page object. A bar just under a rebuilt
+  line becomes that line's underline at the translated length; a black bar
+  only when it spans the whole line outside a table cell; any other bar is
+  drawn where it stood. Black strokes still travel as `LTLine`.
+- A paragraph left untranslated over several lines, and a stack of paragraph
+  numbers, are drawn from their source glyphs (`source_chars`).
+- Stacked heading lines (`heading_lines_part`): centred lines that start and
+  end apart, a one-line heading whose next line changes style, and a short
+  label line such as "Appendix A" each start a paragraph; not inside table
+  cells. A line ending on a check box ends its item, and a four-em gap on
+  one line parts two columns.
+- List-label paragraphs keep a hanging indent: wrapped lines start at the
+  source's second-line x and the first line tabs to it after the label.
+- Single lines get no overflow allowance; a word wider than the measure
+  lowers the size; a cell's one-line label may run right into its empty row;
+  a cell heading prefers its source line count down to 85% size; a
+  paragraph growing downward leaves up to 0.4 em of the gap below it.
+- Vietnamese output writes month-first numeric date cells day first once the
+  document has shown an unambiguous month-first date.
 - A wrapped translation that overflows its room is wrapped again at the size
   it will be drawn at (`size_to_fit_lines`), down to half size, so it still
   fills the measure; leading is reduced before size as before.

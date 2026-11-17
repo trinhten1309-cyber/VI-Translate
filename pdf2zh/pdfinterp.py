@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple, cast
 
 import numpy as np
+
+from pdf2zh.rules import fill_colour_operator, thin_filled_rule, thin_stroked_rule
 from pdfminer import cmapdb, settings
 from pdfminer.cmapdb import CMapDB
 from pdfminer.pdfcolor import PREDEFINED_COLORSPACE, PDFColorSpace
@@ -317,6 +319,9 @@ class PDFPageInterpreterEx(PDFPageInterpreter):
             else:
                 return color == 0
 
+        if self.take_underline(stroked=True):
+            self.curpath = []
+            return "n"
         if (
             len(self.curpath) == 2
             and self.curpath[0][0] == "m"
@@ -353,10 +358,41 @@ class PDFPageInterpreterEx(PDFPageInterpreter):
             self.curpath = []
 
     ############################################################
+    def take_underline(self, stroked: bool = False) -> bool:
+        """Hand a thin filled bar on the page itself to the device.
+
+        It is drawn again with the text: under its translated line at that
+        line's length, or where it stood. Bars inside forms stay put.
+        """
+        if self.open_forms:
+            return False
+        page = getattr(self.device, "cur_item", None)
+        if page is None or not hasattr(self.device, "underline_rules"):
+            return False
+        if stroked:
+            rule = thin_stroked_rule(
+                self.curpath, self.ctm, float(self.graphicstate.linewidth or 0.0)
+            )
+            colour = fill_colour_operator(self.graphicstate.scolor)
+        else:
+            rule = thin_filled_rule(self.curpath, self.ctm)
+            colour = fill_colour_operator(self.graphicstate.ncolor)
+        if rule is None or colour is None:
+            return False
+        if stroked and not colour[1]:
+            # A black stroke stays a rule the converter already redraws:
+            # a blank to fill in ("from ____ to ____") or a fraction bar.
+            return False
+        page.underline_rules = getattr(page, "underline_rules", []) + [(*rule, *colour)]
+        return True
+
     def do_f(self) -> None:
         """Fill path using nonzero winding number rule"""
         # self.device.paint_path(self.graphicstate, False, True, False, self.curpath)
+        taken = self.take_underline()
         self.curpath = []
+        if taken:
+            return "n"
 
     def do_F(self) -> None:
         """Fill path using nonzero winding number rule (obsolete)"""
@@ -364,7 +400,10 @@ class PDFPageInterpreterEx(PDFPageInterpreter):
     def do_f_a(self) -> None:
         """Fill path using even-odd rule"""
         # self.device.paint_path(self.graphicstate, False, True, True, self.curpath)
+        taken = self.take_underline()
         self.curpath = []
+        if taken:
+            return "n"
 
     def do_B(self) -> None:
         """Fill and stroke path using nonzero winding number rule"""

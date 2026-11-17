@@ -637,6 +637,30 @@ def translate_patch(
                         for hx0, hy0, hx1, hy1 in header_bounds
                     ):
                         continue
+                    if name == "figure" and formula_is_words(
+                        (raw_x0, raw_y0, raw_x1, raw_y1),
+                        doc_zh[page.pageno].get_text("words"),
+                    ) and not any(
+                        min(raw_x1, ix1) > max(raw_x0, ix0) and min(raw_y1, iy1) > max(raw_y0, iy0)
+                        for ix0, iy0, ix1, iy1 in (
+                            image["bbox"] for image in doc_zh[page.pageno].get_image_info()
+                        )
+                    ):
+                        # A "figure" that is one line of words and check
+                        # boxes, with no image: Apple's "Yes ☐ No ☒". It is
+                        # one text region, check boxes included.
+                        patch = box[
+                            np.clip(int(h - raw_y1 - 1), 0, h - 1):np.clip(int(h - raw_y0 + 1), 0, h - 1),
+                            np.clip(int(raw_x0 - 1), 0, w - 1):np.clip(int(raw_x1 + 1), 0, w - 1),
+                        ]
+                        patch[patch != 0] = i + 2
+                        page_class_bounds[i + 2] = (
+                            raw_x0,
+                            float(page_rect.height) - raw_y1,
+                            raw_x1,
+                            float(page_rect.height) - raw_y0,
+                        )
+                        continue
                     if name == "isolate_formula" and formula_is_words(
                         (raw_x0, raw_y0, raw_x1, raw_y1),
                         doc_zh[page.pageno].get_text("words"),

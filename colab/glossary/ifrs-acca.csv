@@ -52,3 +52,12 @@ in billions,tỷ,chung,0,Đơn vị trong báo cáo tài chính
 unaudited,chưa kiểm toán,chung,0,
 three months ended,ba tháng kết thúc ngày,chung,0,Tiêu đề cột báo cáo quý
 condensed consolidated,hợp nhất tóm lược,chung,0,Báo cáo tài chính giữa niên độ (10-Q)
+marketable securities,chứng khoán có thể giao dịch,chung,0,"Không dịch là ""niêm yết"" (listed); ""quoted price"" mới là ""giá niêm yết"""
+non-marketable securities,chứng khoán không giao dịch trên thị trường,chung,0,Đầu tư vào công ty tư nhân
+gross margin,biên lợi nhuận gộp,chung,0,"Khi là tỷ lệ % (NVIDIA); dòng số tiền ""Gross margin"" trên báo cáo kết quả kinh doanh của Apple/Microsoft là ""lợi nhuận gộp"""
+Quantitative and Qualitative Disclosures About Market Risk,Công bố định lượng và định tính về rủi ro thị trường,chung,0,Mục 3 / Mục 7A của 10-Q và 10-K; dùng đúng một cách dịch ở mục lục và tiêu đề
+Compute & Networking,Compute & Networking,chung,1,Tên bộ phận báo cáo của NVIDIA; giữ nguyên như tên riêng
+Graphics,Graphics,chung,1,"Tên bộ phận báo cáo của NVIDIA khi viết hoa trong ngoặc kép hoặc cạnh ""Compute & Networking"""
+ACIE,ACIE,chung,1,"AI Clouds, Industrial and Enterprise; giữ viết tắt, lần đầu kèm tên đầy đủ đã dịch"
+certiorari,certiorari,chung,1,Giữ nguyên kèm chú thích: lệnh của Tòa án Tối cao cho phép xem xét lại phán quyết
+Vice-Chair,Phó Chủ tịch,chung,0,

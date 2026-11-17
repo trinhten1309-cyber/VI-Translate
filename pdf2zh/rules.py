@@ -1543,6 +1543,10 @@ def should_translate_table_cell(text: str) -> bool:
         return False
     if DATE_CELL_PATTERN.search(value) or SLASHED_WORDS_PATTERN.search(value):
         return True
+    if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", value):
+        # A numeric date is written day first for Vietnamese readers when the
+        # document's dates are month first.
+        return True
 
     def natural_token(token: str) -> bool:
         token = token.strip("()[]{}:;,\"'“”")
@@ -1564,6 +1568,16 @@ def should_translate_table_cell(text: str) -> bool:
                 and sum(character in "AEIOUY" for character in letters) >= 2
                 and not any(character.isdigit() for character in token)
             )
+        parts = token.split("-")
+        if (
+            len(parts) > 1
+            and all(re.fullmatch(r"[A-Z]?[a-z]+", part) for part in parts)
+            and max(len(part) for part in parts) >= 4
+        ):
+            # A compound of words ("Vice-Chair", "Co-Chair") is a title, not
+            # a code: IFRS 3 kept "Vice-Chair" in English under a translated
+            # "Chairman".
+            return True
         if (
             any(character.isdigit() for character in token)
             or re.search(r"[a-z][A-Z]", token)
@@ -1863,4 +1877,80 @@ def classify_preserved_page(page_text: str) -> PreservationDecision | None:
             "REFERENCES",
             f"refs={all_refs}, years={year_parentheses}, isbn_doi={isbn_doi}",
         )
+    return None
+
+
+def thin_filled_rule(
+    path: Sequence[Sequence[Any]],
+    matrix: Sequence[float],
+    max_height: float = 1.6,
+) -> tuple[float, float, float, float] | None:
+    """A filled path that is one thin horizontal bar, in device space.
+
+    Links in the 10-Q contents pages are underlined with bars 0.7 pt tall,
+    filled rather than stroked, so they stayed where the English words ended.
+    `path` is pdfminer's current path (a rectangle arrives as m, l, l, l, h)
+    and `matrix` the CTM. None for anything else.
+    """
+    points = [segment[-2:] for segment in path if segment and segment[0] in ("m", "l")]
+    if len(points) != 4 or any(segment[0] not in ("m", "l", "h") for segment in path):
+        return None
+    a, b, c, d, e, f = (float(value) for value in matrix)
+    if abs(b) > 1e-6 or abs(c) > 1e-6:
+        return None
+    xs = [a * float(x) + e for x, _y in points]
+    ys = [d * float(y) + f for _x, y in points]
+    if len({round(value, 2) for value in xs}) != 2 or len({round(value, 2) for value in ys}) != 2:
+        return None
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    if y1 - y0 > max_height or y1 - y0 <= 0 or x1 - x0 < 2 or x1 - x0 < 3 * (y1 - y0):
+        return None
+    return x0, y0, x1, y1
+
+
+def thin_stroked_rule(
+    path: Sequence[Sequence[Any]],
+    matrix: Sequence[float],
+    line_width: float,
+    max_height: float = 1.6,
+) -> tuple[float, float, float, float] | None:
+    """A stroked horizontal segment, as the bar it paints in device space.
+
+    Apple's contents page underlines its links with 0.45 pt blue strokes.
+    """
+    if len(path) != 2 or path[0][0] != "m" or path[1][0] != "l":
+        return None
+    a, b, c, d, e, f = (float(value) for value in matrix)
+    if abs(b) > 1e-6 or abs(c) > 1e-6:
+        return None
+    (x0, y0), (x1, y1) = ((a * float(x) + e, d * float(y) + f) for x, y in (path[0][-2:], path[1][-2:]))
+    width = max(line_width, 0.1) * abs(d)
+    if abs(y1 - y0) > 0.01 or width > max_height or abs(x1 - x0) < 4:
+        return None
+    return min(x0, x1), y0 - width / 2, max(x0, x1), y0 + width / 2
+
+
+def fill_colour_operator(colour: Any) -> tuple[str, bool] | None:
+    """A fill operator for a bar's colour and whether it is a link colour.
+
+    White and near-white bars are knock-outs and stay in the page. Coloured
+    bars are link underlines; black and grey ones may be underlines or rules.
+    """
+    if colour is None:
+        return "0 g", False
+    values = colour if isinstance(colour, (tuple, list)) else (colour,)
+    try:
+        numbers = [float(value) for value in values]
+    except (TypeError, ValueError):
+        return None
+    if len(numbers) == 1:
+        return (None if numbers[0] >= 0.85 else (f"{numbers[0]:f} g", False))
+    if len(numbers) == 3:
+        if min(numbers) >= 0.85:
+            return None
+        return " ".join(f"{value:f}" for value in numbers) + " rg", max(numbers) - min(numbers) >= 0.3
+    if len(numbers) == 4:
+        if max(numbers) <= 0.1:
+            return None
+        return " ".join(f"{value:f}" for value in numbers) + " k", max(numbers[:3]) - min(numbers[:3]) >= 0.3
     return None

@@ -25,6 +25,7 @@ from tenacity import (
 )
 
 from pdf2zh.rules import (
+    CONTINUING_WORDS,
     is_bullet_character,
     is_formula_font,
     line_height_for_language,
@@ -580,6 +581,22 @@ def strip_style_tags(text: str) -> str:
     return STYLE_TAG_PATTERN.sub("", text)
 
 
+REFERENCE_TOKEN = r"[A-Z]{0,2}\d{1,4}[A-Za-z]?[.):]?"
+REFERENCE_COLUMN_PATTERN = re.compile(rf"\s*{REFERENCE_TOKEN}(?:\s+{REFERENCE_TOKEN})+\s*")
+
+
+def is_reference_column(segment: str) -> bool:
+    """Whether a paragraph is only a stack of numbers or paragraph references.
+
+    "11 12 13", "23 23A", "B12 B13": margin numbers that the layout model put
+    in one box. They are drawn where the source drew them.
+    """
+    visible = strip_style_tags(segment)
+    if re.search(r"\{v\d+\}", visible):
+        return False
+    return REFERENCE_COLUMN_PATTERN.fullmatch(visible) is not None
+
+
 def is_translatable_segment(segment: str, preserved: Iterable[str]) -> bool:
     """Whether the translator should actually be asked for this segment.
 
@@ -867,6 +884,132 @@ class PDFConverterEx(PDFConverter):
         return item.adv
 
 
+def rendered_line_extents(
+    operations: list[dict],
+    measure: Callable[[str, int, float], float],
+    y: float,
+    offsets: Sequence[float] | dict,
+) -> list[tuple[float, float, float, float]]:
+    """Each drawn line's left and right ink edge, baseline and size."""
+    lines: dict[int, list[float]] = {}
+    for values in operations:
+        if values["type"] != OpType.TEXT:
+            continue
+        size = float(values["size"])
+        if "width_em" in values:
+            left, right = float(values["x"]), float(values["x"]) + values["width_em"] * size
+        elif values.get("text", "").strip():
+            text = values["text"]
+            style = int(values.get("style", TextStyle.REGULAR))
+            lead = sum(measure(character, style, size) for character in text[: len(text) - len(text.lstrip())])
+            body = sum(measure(character, style, size) for character in text.rstrip())
+            left, right = float(values["x"]) + lead, float(values["x"]) + body
+        else:
+            continue
+        index = values["lidx"]
+        baseline = y - offsets[index]
+        if index in lines:
+            line = lines[index]
+            line[0], line[1], line[3] = min(line[0], left), max(line[1], right), max(line[3], size)
+        else:
+            lines[index] = [left, right, baseline, size]
+    return [tuple(lines[index]) for index in sorted(lines)]
+
+
+def source_line_extents(characters: Sequence[Any]) -> list[tuple[float, float, float, float]]:
+    """A paragraph's source lines: left and right ink edge, baseline and size."""
+    lines: list[list[float]] = []
+    for character in sorted(characters, key=lambda glyph: (-round(float(glyph.matrix[5]), 1), float(glyph.x0))):
+        if not character.get_text().strip():
+            continue
+        baseline = float(character.matrix[5])
+        size = float(character.size)
+        for line in lines:
+            if abs(line[2] - baseline) <= 0.3 * max(size, line[3]):
+                line[0], line[1], line[3] = min(line[0], character.x0), max(line[1], character.x1), max(line[3], size)
+                break
+        else:
+            lines.append([float(character.x0), float(character.x1), baseline, size])
+    lines.sort(key=lambda line: -line[2])
+    return [tuple(line) for line in lines]
+
+
+def underline_operations(
+    rules: Sequence[tuple[float, float, float, float, str, bool]],
+    source_lines: dict[int, list[tuple[float, float, float, float]]],
+    drawn_lines: dict[int, list[tuple[float, float, float, float]]],
+    cells: set[int] = frozenset(),
+) -> list[str]:
+    """Underlines drawn again under the lines that now carry them.
+
+    `rules` are thin bars taken out of the page (x0, y0, x1, y1, colour,
+    whether the colour is a link's). A bar just under a source line and no
+    wider than it underlines that line; a black or grey one only when it
+    spans the whole line outside a table cell, as a rule under a heading
+    does ("NOTE 1 — ACCOUNTING POLICIES"). The underline
+    goes under the same share of the translated line, a fully underlined
+    paragraph is underlined on every line, and it sits clear of the dot below
+    "ụ" and "ạ", which the source position cut through ("Mục" read "Muc").
+    Any other bar is drawn where it stood.
+    """
+    operations: list[str] = []
+    claimed: dict[int, list[tuple[int, float, float, tuple]]] = {}
+    for rule in rules:
+        x0, y0, x1, y1, colour, linked = rule
+        owner = None
+        for index, lines in source_lines.items():
+            if index not in drawn_lines or not drawn_lines[index]:
+                continue
+            if not linked and index in cells:
+                continue
+            for number, (left, right, baseline, size) in enumerate(lines):
+                if not baseline - 0.45 * size <= y1 <= baseline + 0.1 * size:
+                    continue
+                if x0 < left - 0.8 * size or x1 > right + 0.8 * size:
+                    continue
+                if not linked and (x0 > left + 0.8 * size or x1 < right - 0.8 * size):
+                    continue
+                if min(x1, right) - max(x0, left) < 0.5 * (x1 - x0):
+                    # The underlined space at a line's end: it belonged to
+                    # the English line and goes with it.
+                    owner = (index, number, None, None)
+                    break
+                width = max(right - left, 1e-6)
+                owner = (index, number, (max(x0, left) - left) / width, (min(x1, right) - left) / width)
+                break
+            if owner:
+                break
+        if owner is None:
+            operations.append(f"ET q {colour} {x0:f} {y0:f} {x1 - x0:f} {y1 - y0:f} re f Q BT ")
+            continue
+        index, number, start, end = owner
+        if start is None:
+            continue
+        claimed.setdefault(index, []).append((number, start, end, rule))
+    for index, marks in claimed.items():
+        lines, drawn = source_lines[index], drawn_lines[index]
+        full = {number for number, start, end, _rule in marks if start <= 0.05 and end >= 0.95}
+        if len(full) == len(lines):
+            targets = [(number, 0.0, 1.0, marks[0][3]) for number in range(len(drawn))]
+        elif len(lines) == len(drawn):
+            targets = marks
+        else:
+            for _number, _start, _end, (x0, y0, x1, y1, colour, _linked) in marks:
+                operations.append(f"ET q {colour} {x0:f} {y0:f} {x1 - x0:f} {y1 - y0:f} re f Q BT ")
+            continue
+        for number, start, end, (x0, y0, x1, y1, colour, _linked) in targets:
+            left, right, baseline, size = drawn[number]
+            source_baseline = lines[min(number, len(lines) - 1)][2]
+            source_size = lines[min(number, len(lines) - 1)][3]
+            drop = max((source_baseline - y1) * size / max(source_size, 1e-6), 0.26 * size)
+            top = baseline - drop
+            thickness = y1 - y0
+            ux0 = left + start * (right - left)
+            ux1 = left + end * (right - left)
+            operations.append(f"ET q {colour} {ux0:f} {top - thickness:f} {ux1 - ux0:f} {thickness:f} re f Q BT ")
+    return operations
+
+
 def size_to_fit_lines(
     lines_at: Callable[[float], int],
     size: float,
@@ -906,6 +1049,44 @@ def blank_run(characters: Sequence[Any], lines: Sequence[Any] = ()) -> bool:
     return not lines and not "".join(character.get_text() for character in characters).strip()
 
 
+DATE_CELL = re.compile(r"(\s*(?:<s\d>)*\s*)(\d{1,2})/(\d{1,2})/(\d{4})(\s*(?:</s\d>)*\s*)")
+
+
+def us_date_order_is_certain(segment: str) -> bool:
+    """Whether a segment holds a month-first date whose day cannot be a month."""
+    return any(
+        int(month) <= 12 < int(day) <= 31
+        for month, day in re.findall(r"\b(\d{1,2})/(\d{1,2})/\d{4}\b", strip_style_tags(segment))
+    )
+
+
+def day_first_date_cell(segment: str) -> str:
+    """A cell holding only a month-first date, written day first: 3/19/2026 -> 19/3/2026."""
+    match = DATE_CELL.fullmatch(segment)
+    if not match or int(match.group(2)) > 12 or int(match.group(3)) > 31:
+        return segment
+    lead, month, day, year, tail = match.groups()
+    return f"{lead}{int(day)}/{int(month)}/{year}{tail}"
+
+
+LIST_LABEL_START = re.compile(
+    r"\s*(?:<s\d>)*\s*(?:\((?:[a-z]{1,2}|[ivx]{1,5}|\d{1,2})\)|(?:[a-z]|\d{1,2})[.)]|[•·▪–-])\s"
+)
+CHECK_BOXES = frozenset("☐☑☒■□")
+
+
+def ends_with_check_box(segment: str, formulas: Sequence[Sequence[Any]]) -> bool:
+    """Whether a paragraph so far ends on a check box: the next line is another item.
+
+    Apple's "Smaller reporting company ☐" over "Emerging growth company ☐".
+    """
+    match = re.search(r"\{v(\d+)\}\s*(</s\d>)*\s*$", segment)
+    if not match or int(match.group(1)) >= len(formulas):
+        return False
+    glyphs = "".join(character.get_text() for character in formulas[int(match.group(1))]).strip()
+    return bool(glyphs) and all(glyph in CHECK_BOXES for glyph in glyphs)
+
+
 def starts_lower_line(character: Any, previous: Any) -> bool:
     """Whether a glyph stands wholly below the glyph before it.
 
@@ -931,6 +1112,9 @@ class Paragraph:
         self.layout_bound: tuple[float, float, float, float] | None = None
         self.orientation = text_orientation(matrix or (1, 0, 0, 1))
         self.rotated_chars: list[LTChar] = []
+        # Upright glyphs, kept to redraw a paragraph exactly as the source
+        # set it when it is not prose (a column of paragraph numbers).
+        self.source_chars: list[LTChar] = []
         # Rotated text that cannot be rebuilt safely is drawn from its source
         # glyphs, together with the protected glyphs it held.
         self.replay_source = False
@@ -1042,6 +1226,9 @@ class TranslateConverter(PDFConverterEx):
         # high_level fills this mapping after the converter is constructed.
         # Preserve an empty mapping by identity instead of replacing it.
         self.layout_bounds = layout_bounds if layout_bounds is not None else {}
+        # Thin filled bars the interpreter took off the page for this device
+        # to draw again under the translated text (see underline_operations).
+        self.underline_rules = True
         self.class_bounds = class_bounds if class_bounds is not None else {}
         self.ocr_paragraph_classes = (
             ocr_paragraph_classes if ocr_paragraph_classes is not None else {}
@@ -1258,6 +1445,7 @@ class TranslateConverter(PDFConverterEx):
         region_baselines: dict[int, list[tuple[float, float]]] = {}
         region_cjk: Counter[int] = Counter()
         line_start: LTChar | None = None
+        page_text_right = 0.0
         previous_glyph: LTChar | None = None
         for child in ltpage:
             if isinstance(child, LTChar):
@@ -1285,7 +1473,17 @@ class TranslateConverter(PDFConverterEx):
                     child.line_opening = ""
                     child.first_word_end = None
                     child.first_word_done = False
+                    child.line_x1 = child.x1
+                    child.line_text = ""
+                    child.line_styles = set()
                 if line_start is not None:
+                    child.line_head = line_start
+                    line_start.line_x1 = max(line_start.line_x1, child.x1)
+                    if child.get_text().strip():
+                        page_text_right = max(page_text_right, child.x1)
+                    line_start.line_text += child.get_text()
+                    if child.get_text().strip():
+                        line_start.line_styles.add(text_style_of(child))
                     if len(line_start.line_opening) < 12:
                         line_start.line_opening += child.get_text()
                     if not line_start.first_word_done:
@@ -1406,6 +1604,18 @@ class TranslateConverter(PDFConverterEx):
                             )):
                             close_style(len(sstk) - 1)
                             new_paragraph(child, cls)
+                        elif (
+                            child.x0 - xt.x1 > 4 * max(child.size, xt.size)
+                            and not starts_lower_line(child, xt)
+                            and pstk[-1].orientation == IDENTITY_ORIENTATION
+                            and pstk[-1].visible_length
+                            and child.get_text().strip()
+                        ):
+                            # A gap of four ems on one line parts two columns:
+                            # Apple's "Large accelerated filer ☒" and
+                            # "Accelerated filer ☐" were read as one item.
+                            close_style(len(sstk) - 1)
+                            new_paragraph(child, cls)
                         elif child.x0 > xt.x1 + 1 and not starts_lower_line(child, xt):
                             if pstk[-1].orientation == IDENTITY_ORIENTATION:
                                 append_styled(
@@ -1424,6 +1634,16 @@ class TranslateConverter(PDFConverterEx):
                             first_word_end = getattr(child, "first_word_end", None)
                             if cls not in ocr_paragraphs and pstk[-1].text_length > 1 and (
                                 line_changes_size(child.get_text(), child.size, pstk[-1].size)
+                                or ends_with_check_box(sstk[-1], var)
+                                or (
+                                    int(cls) not in page_cell_bounds
+                                    and heading_lines_part(
+                                        getattr(xt, "line_head", None),
+                                        getattr(child, "line_head", None),
+                                        pstk[-1].brk,
+                                        page_text_right,
+                                    )
+                                )
                                 or line_ends_paragraph(xt.x1, page_class_bounds.get(int(cls)))
                                 or cell_line_ends_paragraph(
                                     xt.x1,
@@ -1435,12 +1655,29 @@ class TranslateConverter(PDFConverterEx):
                                 close_style(len(sstk) - 1)
                                 new_paragraph(child, cls)
                             else:
-                                if pstk[-1].orientation == IDENTITY_ORIENTATION:
+                                # A line broken after a hyphen inside a code
+                                # ("Rule 13a-" / "15(f)") joins without a
+                                # space; words broken across lines keep the
+                                # space they always had.
+                                joined_at_hyphen = bool(
+                                    (
+                                        re.search(r"\d[0-9A-Za-z]*-(</s\d>)*$", sstk[-1])
+                                        and re.match(r"[0-9a-z(]", child.get_text())
+                                    )
+                                    or (
+                                        re.search(r"[0-9A-Za-z]-(</s\d>)*$", sstk[-1])
+                                        and re.match(r"\d", child.get_text())
+                                    )
+                                )
+                                if pstk[-1].orientation == IDENTITY_ORIENTATION and not joined_at_hyphen:
                                     append_styled(
                                         len(sstk) - 1,
                                         " ",
                                         text_style_of(child),
                                     )
+                                # Where the wrapped lines start, for a hanging
+                                # indent under a list label.
+                                pstk[-1].hang_x0 = min(getattr(pstk[-1], "hang_x0", child.x0), child.x0)
                                 pstk[-1].brk = True
                     else:
                         if sstk:
@@ -1496,6 +1733,7 @@ class TranslateConverter(PDFConverterEx):
                         child.rotated_paragraph = len(pstk) - 1
                         pstk[-1].text_length += len(child.get_text())
                     else:
+                        pstk[-1].source_chars.append(child)
                         if size_should_follow_body(
                             pstk[-1].size,
                             child.size,
@@ -1559,6 +1797,19 @@ class TranslateConverter(PDFConverterEx):
                     rotated_glyphs.setdefault(orientation, []).append(child)
         for index, paragraph in enumerate(pstk):
             close_style(index)
+            if (
+                paragraph.orientation == IDENTITY_ORIENTATION
+                and paragraph.brk
+                and paragraph.source_chars
+                and is_reference_column(sstk[index])
+            ):
+                # IFRS 3's margin numbers "11", "12", "13" stand beside their
+                # own paragraphs. Read as one paragraph and set again, they
+                # ran together as "111213" at the top of the first.
+                paragraph.replay_source = True
+                paragraph.replay_formulas = [int(value) for value in re.findall(r"\{v(\d+)\}", sstk[index])]
+                preserved_segments.add(sstk[index])
+                continue
             if not paragraph.rotated_chars:
                 continue
             a, b, _c, _d = paragraph.orientation
@@ -1601,6 +1852,7 @@ class TranslateConverter(PDFConverterEx):
             if bound is None:
                 continue
             text_left = paragraph.x0
+            paragraph.text_box = (paragraph.x0, paragraph.y0, paragraph.x1, paragraph.y1)
             paragraph.x0, paragraph.y0, paragraph.x1, paragraph.y1 = bound
             if paragraph.orientation == IDENTITY_ORIENTATION:
                 # A wrapped line goes back to where the cell's text starts,
@@ -1696,6 +1948,15 @@ class TranslateConverter(PDFConverterEx):
             ) as executor:
                 news = list(executor.map(worker, sstk))
 
+        # A date cell written month first ("3/19/2026") reads as day first
+        # in Vietnamese. Once the document has shown a date that can only be
+        # month first, its date cells are written day first.
+        if str(self.translator.lang_out).lower().startswith("vi"):
+            if any(us_date_order_is_certain(segment) for segment in sstk):
+                self.month_first_dates = True
+            if getattr(self, "month_first_dates", False):
+                news = [day_first_date_cell(new) for new in news]
+
         ############################################################
         def raw_string(fcur: str, cstk: str):
             if fcur in self.output_fonts_by_name:
@@ -1753,6 +2014,33 @@ class TranslateConverter(PDFConverterEx):
                 total += advance
                 pointer += 1
             return total
+
+        def widest_word(text: str, size: float) -> float:
+            """The width of the text's longest unbreakable run at `size`."""
+            widest = current = 0.0
+            style = TextStyle.REGULAR
+            pointer = 0
+            while pointer < len(text):
+                style_tag = STYLE_TAG_PATTERN.match(text, pointer)
+                if style_tag:
+                    closing, identifier = style_tag.groups()
+                    style = TextStyle.REGULAR if closing else TextStyle(int(identifier))
+                    pointer = style_tag.end()
+                    continue
+                formula = re.match(r"\{\s*v([\d\s]+)\}", text[pointer:], re.IGNORECASE)
+                if formula:
+                    try:
+                        current += vlen[int(formula.group(1).replace(" ", ""))]
+                    except (IndexError, ValueError):
+                        pass
+                    pointer += len(formula.group(0))
+                    continue
+                if text[pointer].isspace():
+                    widest, current = max(widest, current), 0.0
+                else:
+                    current += output_font(text[pointer], int(style), size)[1]
+                pointer += 1
+            return max(widest, current)
 
         default_line_height = line_height_for_language(self.translator.lang_out)
         _x, _y = 0, 0
@@ -1968,6 +2256,7 @@ class TranslateConverter(PDFConverterEx):
             else available_height_below(
                 (paragraph.x0, paragraph.y0, paragraph.x1, paragraph.y1),
                 obstacles,
+                size=paragraph.size,
             )
             for paragraph in pstk
         ]
@@ -1997,15 +2286,32 @@ class TranslateConverter(PDFConverterEx):
                         rule.pts[1][1] - rule.pts[0][1], rule.linewidth,
                     ))
 
+        # Each rebuilt paragraph's lines as drawn: (left, right, baseline,
+        # size), for underlines to follow the translation.
+        rendered_lines: dict[int, list[tuple[float, float, float, float]]] = {}
         for id, new in enumerate(news):
             if pstk[id].cls == 0:
                 # A protected block is not prose to fit. Reflowing its glyphs
                 # shifted form labels and detached rules even with new==src.
                 replay_protected(int(value) for value in re.findall(r"\{v(\d+)\}", sstk[id]))
                 continue
+            if (
+                pstk[id].brk
+                and pstk[id].orientation == IDENTITY_ORIENTATION
+                and pstk[id].source_chars
+                and " ".join(new.split()) == " ".join(sstk[id].split())
+            ):
+                # Nothing was translated: the lines stay exactly as the
+                # source set them. IFRS 3's list of Board members, one name
+                # a line, was reflowed as prose into "Philippe Danjou Jan" /
+                # "Engström".
+                ops_list.extend(source_glyph_operation(character) for character in pstk[id].source_chars)
+                replay_protected(int(value) for value in re.findall(r"\{v(\d+)\}", sstk[id]))
+                continue
             if pstk[id].replay_source:
                 ops_list.extend(
-                    source_glyph_operation(character) for character in pstk[id].rotated_chars
+                    source_glyph_operation(character)
+                    for character in (pstk[id].rotated_chars or pstk[id].source_chars)
                 )
                 replay_protected(pstk[id].replay_formulas)
                 continue
@@ -2074,6 +2380,22 @@ class TranslateConverter(PDFConverterEx):
                 x1 = available_width_right(
                     (x0, pstk[id].y0, x1, pstk[id].y1), obstacles, text_right
                 )
+            if (
+                orig_lines == 1
+                and not brk
+                and pstk[id].layout_bound is not None
+                and new != sstk[id]
+                and getattr(pstk[id], "text_box", None) is not None
+            ):
+                # A row label whose cell is no wider than its words ("Net
+                # sales:" over Apple's income lines) may run on into the
+                # empty part of its row instead of shrinking to a few points.
+                _tx0, line_y0, _tx1, line_y1 = pstk[id].text_box
+                x1 = available_width_right(
+                    (x0, line_y0, x1, line_y1),
+                    [bound for bound in obstacles if bound is not pstk[id].layout_bound],
+                    max(x1, text_right),
+                )
             total_avail = paragraph_width_budget(x, x0, x1, orig_lines)
             # Measure actual width of translated text (excluding formula tags)
             total_new_width = 0
@@ -2117,7 +2439,10 @@ class TranslateConverter(PDFConverterEx):
                 x = max(cell_left, min(x, pstk[id].x1 - total_new_width, x1 - total_new_width))
                 x0 = min(x0, x)
                 total_avail = paragraph_width_budget(x, x0, x1, orig_lines)
-            if total_avail > 0 and total_new_width > total_avail * 1.05:
+            # A wrapped paragraph absorbs a small excess in its last line; a
+            # single line has nowhere to put it. NVIDIA's "...growth drivers
+            # and future" ran 19 pt past its 5% allowance and off the page.
+            if total_avail > 0 and total_new_width > total_avail * (1.05 if brk else 1.0):
                 ratio = total_avail / total_new_width
                 if not brk and ratio < 0.5 and new != sstk[id]:
                     # Only a translation can fall back; source text has
@@ -2144,6 +2469,34 @@ class TranslateConverter(PDFConverterEx):
             if x > x0:
                 x = first_word_start(new, x, x0, x1, size, output_font, vlen)
 
+            hang_x0 = getattr(pstk[id], "hang_x0", None)
+            if (
+                brk
+                and hang_x0 is not None
+                and pstk[id].layout_bound is None
+                and hang_x0 > x + 0.5 * size
+                and hang_x0 < x1 - 4 * size
+                and LIST_LABEL_START.match(new)
+            ):
+                # "(a) recognises and measures ..." wraps under its text, not
+                # under "(a)", as the source does, and its first line's text
+                # starts at the same tab stop.
+                x0 = hang_x0
+                tab_at = LIST_LABEL_START.match(new).end() - 1
+            else:
+                tab_at = -1
+            # A word wider than the measure is never cut: "29/3/2025" in a
+            # 36 pt column broke as "29/3/202" / "5". The size comes down
+            # until the longest word fits.
+            if brk and new != sstk[id] and x1 - x0 > 0:
+                longest = widest_word(new, size)
+                if longest > x1 - x0:
+                    size = max(size * (x1 - x0) / longest, pstk[id].size * 0.5)
+            wrap_x = x
+            if tab_at >= 0:
+                label_width = measure_styled_text(new[:tab_at], size)
+                wrap_x = x + max(0.0, hang_x0 - (x + label_width)) - measure_styled_text(" ", size)
+                wrap_x = max(x, wrap_x)
             # Pre-compute word-boundary line breaks to avoid mid-word splits
             if brk:
                 def _measure_char(
@@ -2153,7 +2506,7 @@ class TranslateConverter(PDFConverterEx):
 
                 size, break_positions = balanced_wrap_positions(
                     new,
-                    x,
+                    wrap_x,
                     x0,
                     x1,
                     size,
@@ -2170,7 +2523,7 @@ class TranslateConverter(PDFConverterEx):
                 fitted = size_to_fit_lines(
                     lambda candidate: new.count("\n") + 1 + len(
                         balanced_wrap_positions(
-                            new, x, x0, x1, candidate, pstk[id].size * 0.5,
+                            new, wrap_x, x0, x1, candidate, pstk[id].size * 0.5,
                             _measure_char, vlen,
                         )[1]
                     ),
@@ -2181,9 +2534,25 @@ class TranslateConverter(PDFConverterEx):
                 )
                 if fitted < size:
                     size, break_positions = balanced_wrap_positions(
-                        new, x, x0, x1, fitted, pstk[id].size * 0.5,
+                        new, wrap_x, x0, x1, fitted, pstk[id].size * 0.5,
                         _measure_char, vlen,
                     )
+                elif (
+                    pstk[id].layout_bound is not None
+                    and new != sstk[id]
+                    and len(break_positions) + 1 > orig_lines
+                ):
+                    # A column heading set on as many lines as the source
+                    # when a slightly smaller size allows it: NVIDIA's
+                    # "Other Assets" became "Tài" / "sản" / "khác".
+                    for candidate in (size * 0.95, size * 0.9, size * 0.85):
+                        _size, candidate_breaks = balanced_wrap_positions(
+                            new, wrap_x, x0, x1, candidate, pstk[id].size * 0.5,
+                            _measure_char, vlen,
+                        )
+                        if len(candidate_breaks) + 1 <= orig_lines:
+                            size, break_positions = candidate, candidate_breaks
+                            break
                 # Replace spaces at break positions with newlines (process in reverse)
                 for bp in sorted(break_positions, reverse=True):
                     new = new[:bp - 1] + '\n' + new[bp:]
@@ -2217,6 +2586,7 @@ class TranslateConverter(PDFConverterEx):
                             "x": tx,
                             "dy": 0,
                             "rtxt": raw_string(fcur, cstk),
+                    "text": cstk,
                             "lidx": lidx,
                             "style": cstyle,
                             "graphic": pstk[id].graphic_instruction,
@@ -2245,6 +2615,26 @@ class TranslateConverter(PDFConverterEx):
                         mod = var[vid][-1].width
                 else:
                     ch = new[ptr]
+                    if ptr == tab_at and lidx == 0 and x < hang_x0:
+                        # The tab after the list label.
+                        if cstk:
+                            ops_vals.append({
+                                "type": OpType.TEXT,
+                                "font": fcur,
+                                "size": size,
+                                "x": tx,
+                                "dy": 0,
+                                "rtxt": raw_string(fcur, cstk),
+                                "text": cstk,
+                                "lidx": lidx,
+                                "style": cstyle,
+                                "graphic": pstk[id].graphic_instruction,
+                            })
+                            cstk = ""
+                        x = hang_x0
+                        tx = x
+                        ptr += 1
+                        continue
                     if ch == '\n':  # Forced line break from word-wrap pre-computation
                         if cstk:
                             ops_vals.append({
@@ -2254,6 +2644,7 @@ class TranslateConverter(PDFConverterEx):
                                 "x": tx,
                                 "dy": 0,
                                 "rtxt": raw_string(fcur, cstk),
+                    "text": cstk,
                                 "lidx": lidx,
                                 "style": cstyle,
                                 "graphic": pstk[id].graphic_instruction,
@@ -2284,6 +2675,7 @@ class TranslateConverter(PDFConverterEx):
                                     "x": tx,
                                     "dy": 0,
                                     "rtxt": raw_string(fcur, before),
+                                    "text": before,
                                     "lidx": lidx,
                                     "style": cstyle,
                                     "graphic": pstk[id].graphic_instruction,
@@ -2304,6 +2696,7 @@ class TranslateConverter(PDFConverterEx):
                                 "x": tx,
                                 "dy": 0,
                                 "rtxt": raw_string(fcur, cstk),
+                    "text": cstk,
                                 "lidx": lidx,
                                 "style": cstyle,
                                 "graphic": pstk[id].graphic_instruction,
@@ -2325,6 +2718,7 @@ class TranslateConverter(PDFConverterEx):
                             "x": x + vch.x0 - var[vid][0].x0,
                             "dy": fix + vch.y0 - var[vid][0].y0,
                             "rtxt": raw_string(self.fontid[vch.font], vc),
+                            "width_em": (vch.x1 - vch.x0) / max(vch.size, 1e-6),
                             "lidx": lidx,
                             "style": TextStyle.REGULAR,
                             "orientation": normalised_text_matrix(vch.matrix),
@@ -2368,6 +2762,7 @@ class TranslateConverter(PDFConverterEx):
                     "x": tx,
                     "dy": 0,
                     "rtxt": raw_string(fcur, cstk),
+                    "text": cstk,
                     "lidx": lidx,
                     "style": cstyle,
                     "graphic": pstk[id].graphic_instruction,
@@ -2460,6 +2855,26 @@ class TranslateConverter(PDFConverterEx):
                     )
                 elif vals["type"] == OpType.LINE:
                     ops_list.append(gen_op_line(vals["x"], vals["dy"] + y - offsets[vals["lidx"]], vals["xlen"], vals["ylen"], vals["linewidth"]))
+            rendered_lines[id] = rendered_line_extents(
+                ops_vals,
+                lambda character, style, glyph_size: output_font(character, style, glyph_size)[1],
+                y,
+                offsets,
+            )
+
+        ops_list.extend(
+            underline_operations(
+                getattr(ltpage, "underline_rules", []),
+                {
+                    index: source_line_extents(paragraph.source_chars)
+                    for index, paragraph in enumerate(pstk)
+                    if paragraph.orientation == IDENTITY_ORIENTATION
+                },
+                rendered_lines,
+                {index for index, paragraph in enumerate(pstk) if paragraph.layout_bound is not None},
+            )
+        )
+        ltpage.underline_rules = []
 
         for l in lstk:
             if l.linewidth < 5:
@@ -2473,6 +2888,7 @@ def available_height_below(
     bounds: tuple[float, float, float, float],
     obstacles: Iterable[tuple[float, float, float, float]],
     floor: float = 0.0,
+    size: float = 0.0,
 ) -> float:
     """Return the height a paragraph may fill before it reaches what is below.
 
@@ -2492,7 +2908,66 @@ def available_height_below(
         if width > 0 and overlap <= 0.1 * width:
             continue  # a hairline touch is a different column, not a collision
         limit = max(limit, oy1)
-    return max(y1 - limit, y1 - y0)
+    # Some of the white space stays between the paragraphs: NVIDIA's
+    # "...fiscal year 2026." took the whole gap and ran into the next one.
+    keep = min(0.4 * size, 0.5 * max(0.0, y0 - limit)) if limit > floor else 0.0
+    return max(y1 - limit - keep, y1 - y0)
+
+
+def heading_lines_part(
+    previous_head: Any,
+    next_head: Any,
+    wrapped: bool,
+    text_right: float | None = None,
+) -> bool:
+    """Whether two lines are stacked heading lines, each its own paragraph.
+
+    `previous_head` and `next_head` are the first glyphs of the two lines,
+    carrying the line's right end, text and styles. NVIDIA sets its statement
+    headers as four centred lines ("NVIDIA Corporation and Subsidiaries" /
+    "Condensed Consolidated Statements of Income" / "(In millions, ...)" /
+    "(Unaudited)"); read as one paragraph, the translation broke inside the
+    statement's name. Lines centred on one axis that start and end apart are
+    separate, and so is a one-line heading whose next line changes style
+    (IFRS 3's bold "International Financial Reporting Standard 3" over its
+    bold italic "Business Combinations"). A line that stops on "of" or "and",
+    or a next line opening in lower case, carries on. `text_right` is where
+    the page's longest lines end: a line that reaches it is prose.
+    """
+    if previous_head is None or next_head is None or previous_head is next_head:
+        return False
+    previous_text = str(getattr(previous_head, "line_text", "")).strip()
+    next_text = str(getattr(next_head, "line_text", "")).strip()
+    if not previous_text or not next_text or next_text[:1].islower():
+        return False
+    if not wrapped and len(previous_text.split()) <= 2 and re.fullmatch(
+        r"(?:[A-Z]|\d{1,3}|[IVX]{1,4})[.:]?", previous_text.split()[-1]
+    ):
+        # "Appendix A" over "Defined terms": a label line of its own.
+        return True
+    last_word = previous_text.split()[-1].lower().strip(",;:")
+    if last_word in CONTINUING_WORDS or previous_text.endswith(("-", ",")):
+        return False
+    size = max(float(previous_head.size), float(next_head.size), 1.0)
+    px0, px1 = float(previous_head.x0), float(getattr(previous_head, "line_x1", previous_head.x1))
+    nx0, nx1 = float(next_head.x0), float(getattr(next_head, "line_x1", next_head.x1))
+    if (
+        len(previous_text.split()) >= 3
+        and abs((px0 + px1) / 2 - (nx0 + nx1) / 2) <= max(2.0, 0.6 * size)
+        and abs(px0 - nx0) > size
+        and abs(px1 - nx1) > size
+    ):
+        return True
+    previous_styles = getattr(previous_head, "line_styles", set())
+    next_styles = getattr(next_head, "line_styles", set())
+    return (
+        not wrapped
+        and text_right is not None
+        and len(previous_styles) == 1
+        and bool(next_styles)
+        and previous_styles != next_styles
+        and px1 < float(text_right) - 4 * size
+    )
 
 
 def line_changes_size(text: str, size: float, paragraph_size: float) -> bool:

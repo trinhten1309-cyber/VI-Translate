@@ -35,7 +35,9 @@ Sửa lỗi: lấy dòng gốc của các id bị báo bằng
 `grep -P "^(12|44)\t" BASE/claude/<tên>/batches/*.txt`, ghi bản sửa vào
 `answers/sua-1.txt` (cùng dạng `id<TAB>bản dịch`), rồi chạy lại `finish`. File
 `sua-*` đứng sau `lo-*` nên thay câu trả lời cũ; các lô khác giữ nguyên.
-`sua-*` chỉ để sửa câu dịch. Chữ còn tiếng Anh vì engine không tách được (tiêu
+Id thay đổi giữa các lần `prepare`: luôn trả lời theo id của lô vừa đọc,
+không chép câu trả lời của job cũ (một lần lệch id đã đổi chỗ bốn dòng mục
+lục IFRS 3 trong cache). `sua-*` chỉ để sửa câu dịch. Chữ còn tiếng Anh vì engine không tách được (tiêu
 đề bảng, đầu trang, tiêu đề báo cáo) phải sửa trong `pdf2zh/`, không sửa tay.
 
 Kiểm tra chữ còn sót sau khi dựng:

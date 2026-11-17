@@ -533,6 +533,98 @@ class FinancialStatementTests(unittest.TestCase):
         self.assertTrue(starts_lower_line(glyph("O", 579.4, 590.6), glyph("5", 594.8, 603.7)))
         self.assertFalse(starts_lower_line(glyph("x", 594.0, 603.0), glyph("5", 594.8, 603.7)))
 
+    def test_margin_numbers_stay_beside_their_paragraphs(self):
+        """IFRS 3's "11", "12", "13" in one model box ran together as
+        "111213" at the top of paragraph 11."""
+        from pdf2zh.converter import is_reference_column
+        self.assertTrue(is_reference_column("11 12 13"))
+        self.assertTrue(is_reference_column("23 23A"))
+        self.assertTrue(is_reference_column("<s1>B12 B13</s1>"))
+        self.assertFalse(is_reference_column("23A"))
+        self.assertFalse(is_reference_column("Item 1"))
+        self.assertFalse(is_reference_column("11 {v0}"))
+
+    def test_a_hyphenated_title_is_cell_text(self):
+        self.assertTrue(should_translate_table_cell("Vice-Chair"))
+        self.assertTrue(should_translate_table_cell("Co-Chair"))
+        self.assertFalse(should_translate_table_cell("AB-CD"))
+        self.assertFalse(should_translate_table_cell("IFRS-9"))
+
+    def test_stacked_heading_lines_are_separate_paragraphs(self):
+        from pdf2zh.converter import heading_lines_part
+        line = lambda text, x0, x1, styles=frozenset({1}), size=8.0: SimpleNamespace(
+            line_text=text, x0=x0, line_x1=x1, size=size, line_styles=set(styles), x1=x1)
+        name = line("NVIDIA Corporation and Subsidiaries", 240, 372)
+        title = line("Condensed Consolidated Statements of Income", 226, 386)
+        self.assertTrue(heading_lines_part(name, title, False, 594))
+        # A wrapped title carries on after "of", and a lower-case line too.
+        self.assertFalse(heading_lines_part(line("Condensed Consolidated Statements of", 232, 380), line("Income", 288, 318), False, 594))
+        self.assertFalse(heading_lines_part(name, line("and subsidiaries", 260, 350), False, 594))
+        # Left-aligned prose lines are one paragraph.
+        self.assertFalse(heading_lines_part(line("The objective of this IFRS is to", 112, 480), line("Improve the relevance", 112, 470), True, 480))
+        # "Appendix A" over "Defined terms"; a bold line over a bold italic one.
+        self.assertTrue(heading_lines_part(line("Appendix A", 112, 178), line("Defined terms", 112, 192), False, 480))
+        self.assertTrue(heading_lines_part(
+            line("International Financial Reporting Standard 3", 137, 380, {1}),
+            line("Business Combinations", 137, 260, {3}), False, 480))
+        self.assertFalse(heading_lines_part(
+            line("A paragraph whose first line is all bold and fills the measure", 137, 478, {1}),
+            line("Then regular text", 137, 300, {0}), False, 480))
+
+    def test_month_first_date_cells_are_written_day_first(self):
+        from pdf2zh.converter import day_first_date_cell, us_date_order_is_certain
+        self.assertTrue(us_date_order_is_certain("3/19/2026"))
+        self.assertFalse(us_date_order_is_certain("3/6/2026"))
+        self.assertEqual(day_first_date_cell("3/19/2026"), "19/3/2026")
+        self.assertEqual(day_first_date_cell("<s1>10/30/2027</s1>"), "<s1>30/10/2027</s1>")
+        self.assertEqual(day_first_date_cell("Adopted 3/19/2026"), "Adopted 3/19/2026")
+        self.assertEqual(day_first_date_cell("19/3/2026"), "19/3/2026")
+
+    def test_a_line_ending_on_a_check_box_ends_its_item(self):
+        from pdf2zh.converter import ends_with_check_box
+        box = [SimpleNamespace(get_text=lambda: "☐")]
+        star = [SimpleNamespace(get_text=lambda: "∗")]
+        self.assertTrue(ends_with_check_box("Smaller reporting company {v0}", [box]))
+        self.assertFalse(ends_with_check_box("x {v0}", [star]))
+        self.assertFalse(ends_with_check_box("Smaller reporting company", [box]))
+
+    def test_link_underlines_follow_the_translated_line(self):
+        """Contents links kept their English length, ran past the Vietnamese
+        words and cut through the dot under "ụ"."""
+        from pdf2zh.converter import underline_operations
+        from pdf2zh.rules import fill_colour_operator, thin_filled_rule, thin_stroked_rule
+        self.assertEqual(
+            thin_filled_rule([("m", 0, 0), ("l", 100, 0), ("l", 100, 0.7), ("l", 0, 0.7), ("h",)], (1, 0, 0, 1, 50, 100)),
+            (50.0, 100.0, 150.0, 100.7),
+        )
+        self.assertIsNone(thin_filled_rule([("m", 0, 0), ("l", 100, 0), ("l", 100, 14), ("l", 0, 14), ("h",)], (1, 0, 0, 1, 0, 0)))
+        self.assertEqual(thin_stroked_rule([("m", 10, 5), ("l", 60, 5)], (1, 0, 0, 1, 0, 0), 0.5), (10.0, 4.75, 60.0, 5.25))
+        self.assertEqual(fill_colour_operator((0, 0, 1)), ("0.000000 0.000000 1.000000 rg", True))
+        self.assertEqual(fill_colour_operator(0), ("0.000000 g", False))
+        self.assertIsNone(fill_colour_operator((1, 1, 1)))
+        source = {0: [(117.0, 201.0, 600.0, 9.0)]}
+        drawn = {0: [(117.0, 170.0, 600.0, 9.0)]}
+        rule = (117.0, 598.4, 201.0, 598.9, "0 0 1 rg", True)
+        operations = underline_operations([rule], source, drawn)
+        self.assertEqual(len(operations), 1)
+        x, y, width, height = (float(value) for value in operations[0].split("rg ")[1].split(" re")[0].split())
+        self.assertAlmostEqual(x, 117.0)
+        self.assertAlmostEqual(width, 53.0)
+        self.assertLessEqual(y + height, 600.0 - 0.26 * 9.0 + 1e-6)
+        # A bar beside no line is drawn where it stood; a black bar under a
+        # table cell stays too.
+        stray = (300.0, 100.0, 340.0, 100.7, "0 g", False)
+        self.assertIn("300.000000 100.000000", underline_operations([stray], source, drawn)[0])
+        cell_rule = (117.0, 598.4, 201.0, 598.9, "0 g", False)
+        self.assertIn("117.000000 598.400000", underline_operations([cell_rule], source, drawn, {0})[0])
+
+    def test_a_longer_paragraph_keeps_some_space_above_the_next(self):
+        from pdf2zh.converter import available_height_below
+        own = (18.0, 300.0, 590.0, 340.0)
+        below = [(18.0, 250.0, 590.0, 290.0)]
+        self.assertAlmostEqual(available_height_below(own, below), 50.0)
+        self.assertAlmostEqual(available_height_below(own, below, size=8.0), 46.8)
+
     def test_a_line_two_text_boxes_share_goes_to_the_larger_part(self):
         import numpy as np
         from pdf2zh.high_level import majority_text_class
