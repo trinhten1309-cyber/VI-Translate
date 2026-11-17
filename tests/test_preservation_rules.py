@@ -429,6 +429,104 @@ class FinancialStatementTests(unittest.TestCase):
         self.assertEqual(first_word_start("<s1>Thay đổi $</s1>", 520, 495, 526, 8, measure, []), 495)
         self.assertEqual(first_word_start("Thay đổi", 500, 495, 526, 8, measure, []), 500)
 
+    def test_a_cover_set_as_a_figure_is_text(self):
+        from pdf2zh.rules import figure_is_text
+        cover = []
+        for line in range(12):
+            cover += _words(line, 40 + line * 12, (60, "QUARTERLY REPORT PURSUANT TO SECTION 13 OF THE ACT"))
+        logo = [(277, 153, 335, 196)]
+        self.assertTrue(figure_is_text((33, 38, 565, 393), cover, logo, [((10, 200, 590, 200), False)]))
+        # A plot: short labels and slanted strokes.
+        labels = []
+        for line in range(20):
+            labels += _words(line, 40 + line * 12, (60, "56-layer"), (200, "20"))
+        strokes = [((60 + n, 50, 70 + n, 60), True) for n in range(30)]
+        self.assertFalse(figure_is_text((33, 38, 565, 393), labels, [], strokes))
+        # A figure that is mostly a picture.
+        self.assertFalse(figure_is_text((33, 38, 565, 393), cover, [(33, 38, 565, 300)], []))
+
+    def test_contents_items_are_cut_from_their_page_numbers(self):
+        from pdf2zh.rules import line_run_groups
+        words = (
+            _words(0, 100, (23, "Item 1."))
+            + _words(1, 100, (82, "Financial Statements (Unaudited)"))
+            + _words(2, 112, (82, "a) Condensed Consolidated Statements of Income"))
+            + _words(3, 112, (584, "3"))
+            + _words(4, 124, (82, "b) Condensed Consolidated Balance Sheets"))
+            + _words(5, 136, (112, "Recognising and measuring the identifiable assets acquired, the liabilities"))
+            + _words(6, 146, (112, "assumed and any non-controlling interest"))
+            + _words(7, 146, (453, "10"))
+        )
+        texts = [" ".join(word[4] for word in group) for group in line_run_groups(words)]
+        self.assertEqual(texts, [
+            "Item 1.",
+            "Financial Statements (Unaudited)",
+            "a) Condensed Consolidated Statements of Income",
+            "b) Condensed Consolidated Balance Sheets",
+            "Recognising and measuring the identifiable assets acquired, the liabilities "
+            "assumed and any non-controlling interest",
+        ])
+        # Two columns on one line of a cover stay apart; an open bracket
+        # carries its item onto the next line.
+        cover = (
+            _words(0, 242, (120, "(State or other jurisdiction of"))
+            + _words(1, 242, (415, "(I.R.S. Employer"))
+            + _words(2, 252, (118, "incorporation or organization)"))
+            + _words(3, 252, (412, "Identification No.)"))
+        )
+        self.assertEqual(
+            sorted(" ".join(word[4] for word in group) for group in line_run_groups(cover)),
+            ["(I.R.S. Employer Identification No.)",
+             "(State or other jurisdiction of incorporation or organization)"],
+        )
+
+    def test_a_line_two_text_boxes_share_goes_to_the_larger_part(self):
+        import numpy as np
+        from pdf2zh.high_level import majority_text_class
+        self.assertEqual(majority_text_class(np.array([5, 5, 7, 7, 7, 7])), 7)
+        self.assertIsNone(majority_text_class(np.array([7, 7, 7])))
+        self.assertIsNone(majority_text_class(np.array([5, 0, 7, 7])))
+
+    def test_an_items_later_piece_rejoins_its_paragraph(self):
+        from pdf2zh.converter import Paragraph, resumable_paragraph
+        first, beside = Paragraph(0, 0, 0, 0, 0, 0, 8, False, cls=20), Paragraph(0, 0, 0, 0, 0, 0, 8, False, cls=21)
+        self.assertEqual(resumable_paragraph([first, beside], 20, {20, 21}), 0)
+        self.assertIsNone(resumable_paragraph([first, beside], 20, {21}))
+        self.assertIsNone(resumable_paragraph([first, beside], 22, {20, 21, 22}))
+
+    def test_a_line_in_another_type_size_starts_a_paragraph(self):
+        from pdf2zh.converter import line_changes_size
+        self.assertTrue(line_changes_size("F", 8.0, 10.0))
+        self.assertFalse(line_changes_size("t", 9.6, 10.0))
+        # A raised reference or a digit at the start of a line does not count.
+        self.assertFalse(line_changes_size("1", 6.0, 10.0))
+
+    def test_a_header_line_in_another_size_is_its_own_paragraph(self):
+        from pdf2zh.rules import running_header_lines
+        cover = [
+            (227, 73, 370, 94, "UNITED STATES"),
+            (107, 94, 489, 115, "SECURITIES AND EXCHANGE COMMISSION"),
+            (230, 115, 366, 128, "Washington, D.C. 20549"),
+            (20, 172, 559, 183, "QUARTERLY REPORT PURSUANT TO SECTION 13"),
+        ]
+        self.assertEqual(len(running_header_lines(cover, 596, 842)), 3)
+
+    def test_a_region_set_in_columns_is_a_list_of_items(self):
+        from pdf2zh.rules import region_has_columns
+        cover = (
+            _words(0, 300, (100, "WASHINGTON"), (300, "91-1144442"))
+            + _words(1, 310, (90, "(STATE OF INCORPORATION)"), (420, "(I.R.S. ID)"))
+        )
+        self.assertTrue(region_has_columns((20, 290, 560, 330), cover))
+        # A list with markers indents its text; that is no gutter.
+        listed = (_words(0, 300, (100, "(a)"), (160, "during the current reporting period; or"))
+                  + _words(1, 310, (100, "(b)"), (160, "after the end of the reporting period")))
+        self.assertFalse(region_has_columns((20, 290, 560, 330), listed))
+        # Wide justified spaces in different places are no gutter either.
+        justified = (_words(0, 300, (100, "assets"), (160, "or"))
+                     + _words(1, 310, (100, "interests to the"), (260, "former owners")))
+        self.assertFalse(region_has_columns((20, 290, 560, 330), justified))
+
     def test_a_centred_line_stays_centred_when_translated(self):
         from pdf2zh.converter import centred_line_x
         self.assertAlmostEqual(centred_line_x(235, 378, 180, 306, 18, 595), 216)
@@ -436,6 +534,10 @@ class FinancialStatementTests(unittest.TestCase):
         self.assertIsNone(centred_line_x(18, 594, 400, 306, 18, 595))
         # and so does a translation too wide to centre between the margins.
         self.assertIsNone(centred_line_x(235, 378, 590, 306, 18, 595))
+        # A long contents line across the middle keeps its start.
+        self.assertIsNone(centred_line_x(82, 540, 470, 306, 18, 595))
+        # but a heading set larger than the body may be that long.
+        self.assertIsNotNone(centred_line_x(107, 489, 300, 298, 20, 578, True))
 
     def test_a_one_line_heading_takes_the_free_space_to_its_right(self):
         from pdf2zh.converter import available_width_right

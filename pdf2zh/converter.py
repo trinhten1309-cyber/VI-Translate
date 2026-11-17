@@ -996,6 +996,7 @@ class TranslateConverter(PDFConverterEx):
         self.ocr_paragraph_classes = (
             ocr_paragraph_classes if ocr_paragraph_classes is not None else {}
         )
+        self.item_classes: Dict = {}
         self.noto_name = noto_name
         self.noto = noto
         self.style_font_names = style_font_names or {0: noto_name}
@@ -1094,6 +1095,7 @@ class TranslateConverter(PDFConverterEx):
         page_class_bounds = self.class_bounds.get(ltpage.pageid, {})
         page_cell_bounds = self.layout_bounds.get(ltpage.pageid, {})
         ocr_paragraphs = self.ocr_paragraph_classes.get(ltpage.pageid, set())
+        item_classes = self.item_classes.get(ltpage.pageid, set())
         ops: str = ""
         preserved_segments: set[str] = set()
 
@@ -1292,7 +1294,10 @@ class TranslateConverter(PDFConverterEx):
                     # the segment. In prose such as "Factor C1 (applies...)" a
                     # subscript leaves vstk populated; capturing the following
                     # bracket then strands it at its source coordinate.
-                    if vstk and not pstk[-1].text_length and child.get_text() == "(":
+                    # Protected glyphs of another region before it (a cover's
+                    # check boxes) are no formula: "(State or other
+                    # jurisdiction of" lost its bracket to them.
+                    if vstk and cls == xt_cls and not pstk[-1].text_length and child.get_text() == "(":
                         cur_v = True
                         must_preserve = True
                         vbkt += 1
@@ -1360,7 +1365,8 @@ class TranslateConverter(PDFConverterEx):
                                 continue
                             first_word_end = getattr(child, "first_word_end", None)
                             if cls not in ocr_paragraphs and pstk[-1].text_length > 1 and (
-                                line_ends_paragraph(xt.x1, page_class_bounds.get(int(cls)))
+                                line_changes_size(child.get_text(), child.size, pstk[-1].size)
+                                or line_ends_paragraph(xt.x1, page_class_bounds.get(int(cls)))
                                 or cell_line_ends_paragraph(
                                     xt.x1,
                                     None if first_word_end is None
@@ -1381,7 +1387,23 @@ class TranslateConverter(PDFConverterEx):
                     else:
                         if sstk:
                             close_style(len(sstk) - 1)
-                        new_paragraph(child, cls)
+                        earlier = resumable_paragraph(pstk, cls, item_classes)
+                        if earlier is None:
+                            new_paragraph(child, cls)
+                        else:
+                            # The item's next line, written after the column
+                            # beside it: "(State or other jurisdiction of" ...
+                            # "(I.R.S. Employer" ... "incorporation or
+                            # organization)". It joins its paragraph again.
+                            pstk.append(pstk.pop(earlier))
+                            sstk.append(sstk.pop(earlier))
+                            closed = re.search(r"</s(\d+)>$", sstk[-1])
+                            if closed and int(closed.group(1)) == int(text_style_of(child)):
+                                # One style run, not "</s1><s1>" in the middle.
+                                sstk[-1] = sstk[-1][: closed.start()]
+                                pstk[-1].open_style = text_style_of(child)
+                            append_styled(len(sstk) - 1, " ", text_style_of(child))
+                            pstk[-1].brk = True
                 if not cur_v:
                     adopt_graphic(pstk[-1], child)
                     if pstk[-1].orientation != IDENTITY_ORIENTATION:
@@ -1854,6 +1876,7 @@ class TranslateConverter(PDFConverterEx):
             default=0.0,
         )
         page_middle = (float(ltpage.x0) + float(ltpage.x1)) / 2
+        body_size = median([paragraph.size for paragraph in pstk]) if pstk else 0.0
         fit_budgets = [
             paragraph.y1 - paragraph.y0
             if paragraph.layout_bound is not None
@@ -2029,6 +2052,7 @@ class TranslateConverter(PDFConverterEx):
                     page_middle,
                     text_left,
                     x1,
+                    pstk[id].size >= 1.2 * body_size,
                 )
                 if centred is not None:
                     x = centred
@@ -2364,6 +2388,45 @@ def available_height_below(
     return max(y1 - limit, y1 - y0)
 
 
+def line_changes_size(text: str, size: float, paragraph_size: float) -> bool:
+    """Whether a new line set in another type size starts another paragraph.
+
+    Microsoft's cover sets "QUARTERLY REPORT PURSUANT TO SECTION 13 ..." at
+    10 pt over "For the Quarterly Period Ended December 31, 2025" at 8 pt in
+    one text box; read as one paragraph, the line under the heading was set
+    as heading text. A line whose first letter differs in size by 15% or more
+    is another paragraph. A raised mark or a digit at the start of a line
+    does not count.
+    """
+    if not text[:1].isalpha() or paragraph_size <= 0:
+        return False
+    return abs(size - paragraph_size) >= 0.15 * paragraph_size
+
+
+def resumable_paragraph(
+    paragraphs: Sequence["Paragraph"],
+    cls: int,
+    item_classes: set[int],
+) -> int | None:
+    """The earlier paragraph an item's later piece belongs to, if any.
+
+    Only item classes qualify: each is one item of a contents page or cover,
+    so a second run of glyphs in that class is the same item. A rotated
+    paragraph after it keeps its index on its glyphs, so then none qualifies.
+    """
+    if cls not in item_classes or not paragraphs or paragraphs[-1].cls == cls:
+        return None
+    for index in range(len(paragraphs) - 2, -1, -1):
+        if paragraphs[index].cls == cls:
+            if any(
+                paragraph.orientation not in (None, IDENTITY_ORIENTATION)
+                for paragraph in paragraphs[index + 1:]
+            ):
+                return None
+            return index
+    return None
+
+
 def first_word_start(
     text: str,
     x: float,
@@ -2422,6 +2485,7 @@ def centred_line_x(
     page_middle: float,
     left: float,
     right: float,
+    prominent: bool = False,
 ) -> float | None:
     """Where a one-line translation starts so it stays centred like its source.
 
@@ -2430,10 +2494,16 @@ def centred_line_x(
     the page's centre by whatever the translation added. A line centred on the
     page keeps that centre when the translation fits between the page's prose
     margins; otherwise it starts where it did. A line that starts at the left
-    margin is prose that happens to fill the measure, not a centred line.
+    margin, or fills more than 60% of the measure in the body size, is not a
+    centred line; a heading set larger than the body may be that long.
     """
     tolerance = max(3.0, (page_middle - left) * 0.02)
     if source_x0 < left + 6.0 or abs((source_x0 + source_x1) / 2 - page_middle) > tolerance:
+        return None
+    # A long list line that happens to straddle the middle ("b) Condensed
+    # Consolidated Statements of Comprehensive Income for the three months
+    # ...") is not a centred heading.
+    if source_x1 - source_x0 > 0.6 * (2 * (page_middle - left)) and not prominent:
         return None
     start = page_middle - width / 2
     if start < left - 0.5 or start + width > right + 0.5:

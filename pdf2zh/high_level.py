@@ -39,6 +39,9 @@ from pdf2zh.rules import (
     abandon_is_table_caption,
     abandon_outranked_by_text,
     abandon_is_unrepeated_text,
+    figure_is_text,
+    line_run_groups,
+    region_has_columns,
     repeated_page_lines,
     is_footnote_text,
     lines_crossing_region,
@@ -283,6 +286,41 @@ def horizontal_rules(page: Document) -> list[tuple[float, float, float, float]]:
     return rules
 
 
+def majority_text_class(row: np.ndarray) -> int | None:
+    """The text class holding most of a line that two text classes share.
+
+    None when the line has one text class, or crosses protected pixels (a
+    formula or a table keeps its own edge).
+    """
+    if row.size == 0 or (row == 0).any():
+        return None
+    classes, counts = np.unique(row[row > 1], return_counts=True)
+    if len(classes) < 2:
+        return None
+    return int(classes[int(np.argmax(counts))])
+
+
+def page_strokes(page: Document) -> list[tuple[tuple[float, float, float, float], bool]]:
+    """Each drawn line or curve on a page, and whether it is curved or slanted."""
+    strokes = []
+    try:
+        drawings = page.get_drawings()
+    except Exception:  # noqa: BLE001 - no strokes only means less evidence
+        return strokes
+    for drawing in drawings:
+        for item in drawing.get("items", ()):
+            if item[0] == "c":
+                points = item[1:5]
+                strokes.append(((min(p.x for p in points), min(p.y for p in points),
+                                 max(p.x for p in points), max(p.y for p in points)), True))
+            elif item[0] == "l":
+                start, end = item[1], item[2]
+                slanted = abs(start.x - end.x) > 0.5 and abs(start.y - end.y) > 0.5
+                strokes.append(((min(start.x, end.x), min(start.y, end.y),
+                                 max(start.x, end.x), max(start.y, end.y)), slanted))
+    return strokes
+
+
 def span_sizes(page: Document) -> list[tuple[float, float, float, float, float]]:
     """Each text span's box and font size."""
     sizes = []
@@ -415,6 +453,9 @@ def translate_patch(
         ocr_paragraph_classes,
     )
     device.uniform_output_font = bool(custom_output_fonts())
+    # Classes whose item may be written in pieces, interleaved with the column
+    # beside it; the converter joins the pieces back into one paragraph.
+    device.item_classes = {}
     device.cover_scanned_text = not os.environ.get(SKIP_SCAN_COVER_ENV)
 
     if hasattr(device.translator, "on_status"):
@@ -520,6 +561,16 @@ def translate_patch(
                     columns = slice(np.clip(int(lx0 - 1), 0, w - 1), np.clip(int(lx1 + 1), 0, w - 1))
                     patch = box[rows, columns]
                     patch[patch == 1] = i + 2
+            # A line two text boxes share goes whole to the box holding most of
+            # it: Microsoft's cover set "new or revised f" in one box and
+            # "inancial accounting standards ..." in the other.
+            for lx0, ly0, lx1, ly1 in page_lines:
+                rows = slice(np.clip(int(h - ly1 - 1), 0, h - 1), np.clip(int(h - ly0 + 1), 0, h - 1))
+                columns = slice(np.clip(int(lx0), 0, w - 1), np.clip(int(lx1), 0, w - 1))
+                owner = majority_text_class(box[np.clip(int(h - (ly0 + ly1) / 2), 0, h - 1), columns])
+                if owner is not None:
+                    patch = box[rows, columns]
+                    patch[patch > 1] = owner
             header_groups = running_header_lines(
                 [
                     (*line["bbox"], "".join(span["text"] for span in line.get("spans", ())))
@@ -539,6 +590,25 @@ def translate_patch(
                 )
                 for group in header_groups
             ]
+            run_regions: list = []
+            # A text region set in columns (a cover's name, state and number
+            # side by side) is a list of items, not a paragraph.
+            region_words = doc_zh[page.pageno].get_text("words")
+            page_tables = [
+                [float(value) for value in other.xyxy.squeeze()]
+                for other in page_layout.boxes
+                if page_layout.names[int(other.cls)] == "table"
+            ]
+            for _index, d in non_vcls_boxes:
+                bounds = [float(value) for value in d.xyxy.squeeze()]
+                # A table's own cells are read by the table rules.
+                if any(
+                    bounds[0] < tx1 and tx0 < bounds[2] and bounds[1] < ty1 and ty0 < bounds[3]
+                    for tx0, ty0, tx1, ty1 in page_tables
+                ):
+                    continue
+                if region_has_columns(bounds, region_words):
+                    run_regions.append(tuple(bounds))
             translate_all = (pageno in scanned_pages
                              and bool(os.environ.get(TRANSLATE_ALL_SCAN_TEXT_ENV)))
             for i, d in enumerate(page_layout.boxes):
@@ -591,6 +661,20 @@ def translate_patch(
                             float(page_rect.height) - raw_y0,
                         )
                         continue
+                    if name == "abandon" and abandon_is_unrepeated_text(
+                        (raw_x0, raw_y0, raw_x1, raw_y1),
+                        [
+                            (*line["bbox"], "".join(span["text"] for span in line.get("spans", ())))
+                            for block in page_blocks
+                            for line in block.get("lines", [])
+                            if abs(line.get("dir", (1, 0))[1]) < 0.5
+                        ],
+                        furniture,
+                        max_lines=None,
+                    ):
+                        # A longer block set aside, such as a contents list
+                        # carried over to the next page, is a list of items.
+                        run_regions.append((raw_x0, raw_y0, raw_x1, raw_y1))
                     if name == "abandon" and abandon_is_table_caption(
                         (raw_x0, raw_y0, raw_x1, raw_y1),
                         [
@@ -606,6 +690,21 @@ def translate_patch(
                         float(page_rect.height),
                     ):
                         continue
+                    if name == "figure" and figure_is_text(
+                        (raw_x0, raw_y0, raw_x1, raw_y1),
+                        doc_zh[page.pageno].get_text("words"),
+                        [image["bbox"] for image in doc_zh[page.pageno].get_image_info()],
+                        page_strokes(doc_zh[page.pageno]),
+                    ):
+                        # Protected like any figure; its lines are given back
+                        # as items once the page's protection is final. Its
+                        # top edge leaves the descenders of the line above
+                        # it ("(Mark One)" on Apple's cover) alone.
+                        raw_x0, raw_y0, raw_x1, raw_y1 = table_top_below_line(
+                            (raw_x0, raw_y0, raw_x1, raw_y1),
+                            doc_zh[page.pageno].get_text("words"),
+                        )
+                        run_regions.append((raw_x0, raw_y0, raw_x1, raw_y1))
                     if name == "table":
                         raw_x0, raw_y0, raw_x1, raw_y1 = table_bounds_clear_of_text(
                             (raw_x0, raw_y0, raw_x1, raw_y1),
@@ -851,9 +950,57 @@ def translate_patch(
                 lines_ending_num = sum(1 for l in lines if re.search(r'\S\s+\d{1,4}\s*$', l))
                 if lines_ending_num / len(lines) > 0.8:
                     toc_score += lines_ending_num
-            if toc_score >= 8:
-                logger.info(f"Page {pageno + 1} detected as TOC (score={toc_score}), preserving original layout")
+            # An index ("Term, 12") scores as a contents page too; it stays
+            # whole, as it always did.
+            index_like = (
+                (len(lines) >= 20 and sum(1 for l in lines if has_index_page_reference(l)) / len(lines) > 0.4)
+                or bool(lines and re.match(r'^index$', lines[0], re.IGNORECASE))
+            )
+            if toc_score >= 8 and index_like:
+                logger.info(f"Page {pageno + 1} detected as INDEX (contents-like), preserving original layout")
                 box[:, :] = 0
+            elif toc_score >= 8:
+                logger.info(f"Page {pageno + 1} detected as TOC (score={toc_score}), translating its items in place")
+                box[:, :] = 0
+                run_regions = [None]
+            # A contents page and a cover set as a figure are lists of items:
+            # each item is translated where it stands, while page numbers,
+            # leaders, rules and boxes stay as they were.
+            def translate_items(regions: list, next_class: int) -> int:
+                for region in regions:
+                    for group in line_run_groups(page_words, region):
+                        ordered = sorted(group, key=lambda word: (float(word[1]) + float(word[3]), float(word[0])))
+                        for word in group:
+                            wx0, wy0, wx1, wy1 = (float(value) for value in word[:4])
+                            # Down through the descenders: a glyph takes its
+                            # region from its bottom-left corner, and "(" reaches
+                            # below the word box into the protected figure.
+                            wy1 += (wy1 - wy0) * 0.3
+                            box[
+                                np.clip(int(h - wy1 - 1), 0, h - 1):np.clip(int(h - wy0 + 1), 0, h - 1),
+                                np.clip(int(wx0 - 1), 0, w - 1):np.clip(int(wx1 + 1), 0, w - 1),
+                            ] = next_class
+                        for before, after in zip(ordered, ordered[1:]):
+                            by0, by1 = float(before[1]), float(before[3])
+                            if not by0 <= (float(after[1]) + float(after[3])) / 2 <= by1:
+                                continue
+                            gx0, gx1 = float(before[2]), float(after[0])
+                            if gx1 > gx0:
+                                box[
+                                    np.clip(int(h - by1 - 1), 0, h - 1):np.clip(int(h - by0 + 1), 0, h - 1),
+                                    np.clip(int(gx0), 0, w - 1):np.clip(int(gx1 + 1), 0, w - 1),
+                                ] = next_class
+                        page_class_bounds[next_class] = (
+                            min(float(word[0]) for word in group),
+                            page_height - max(float(word[3]) for word in group),
+                            max(float(word[2]) for word in group),
+                            page_height - min(float(word[1]) for word in group),
+                        )
+                        device.item_classes.setdefault(page.pageno, set()).add(next_class)
+                        next_class += 1
+                return next_class
+
+            next_class = translate_items(run_regions, next_class)
 
             # Detect INDEX pages: many lines ending with page numbers, comma+number patterns
             if not (toc_score >= 8):
@@ -905,7 +1052,16 @@ def translate_patch(
                     box[:, :] = 0
 
             preservation = classify_preserved_page(page_text)
-            if preservation is not None and box.any():
+            if preservation is not None and preservation.kind == "TOC" and not index_like:
+                if run_regions != [None]:
+                    logger.info(
+                        "Page %s detected as TOC (%s), translating its items in place",
+                        pageno + 1,
+                        preservation.detail,
+                    )
+                    box[:, :] = 0
+                    next_class = translate_items([None], next_class)
+            elif preservation is not None and box.any():
                 logger.info(
                     "Page %s detected as %s (%s), preserving original layout",
                     pageno + 1,

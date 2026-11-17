@@ -117,8 +117,29 @@ marker, and sent Mac users off to reinstall a complete app.
   page, with two words or more on at most four lines, is the page's own text
   (`abandon_is_unrepeated_text`, against `repeated_page_lines` of the whole
   document) and becomes a text region of its own: a section title, a
-  signature block. Repeated running headers and footers, page numbers and
-  longer carried-over lists (a contents page continued) stay protected.
+  signature block. Repeated running headers and footers and page numbers stay
+  protected; a longer unrepeated block (the rest of a contents list carried
+  to the next page) is translated item by item.
+- Contents pages and covers are translated item by item (`line_run_groups`):
+  the TOC detector and `classify_preserved_page` no longer keep a contents
+  page whole unless it is index-like ("Term, 12" rows or an `Index`
+  heading). A figure that is set text (`figure_is_text`: 40+ words, 3+ a
+  line, at most four curves or slanted strokes, images under 15%) and a text
+  region set in aligned columns (`region_has_columns`, not after a list
+  marker, not over a table) get the same treatment. Each item is its own
+  class painted over its words down through the descenders; page numbers,
+  leaders, rules and boxes stay protected. Item classes go to the converter
+  as `item_classes`, and a later piece of an item written after the column
+  beside it rejoins its paragraph (`resumable_paragraph`).
+- A line shared by two text boxes goes whole to the box holding most of it
+  (`majority_text_class`), unless it crosses protected pixels.
+- A protected glyph of another region before "(" no longer makes the bracket
+  a formula's: the bracket rule requires the same class.
+- A new line whose first letter differs in size by 15% or more from its
+  paragraph starts a new paragraph (`line_changes_size`), and a centred top
+  block breaks between lines of different heights. A one-line translation
+  wider than 60% of the measure is centred only when set at 1.2 times the
+  page's body size or more (a cover's "SECURITIES AND EXCHANGE COMMISSION").
 - A paragraph whose first word does not fit between its source start and its
   right edge starts at its left edge (`first_word_start`): wrapping happens
   only at spaces, and the render loop otherwise cut the word ("Tha" / "y").

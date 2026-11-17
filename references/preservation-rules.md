@@ -31,7 +31,13 @@ The bundled core translates ordinary text while retaining document structures wh
 - Nomenclature, notation, symbol, abbreviation, and glossary pages preserve alternating symbol-definition structures.
 - Reference and bibliography pages preserve numbered, bracketed, author-year, DOI, ISBN, ISSN, and URL-heavy citation structures.
 
-These classifications preserve the complete page layout instead of reflowing numbers into translated prose.
+Index, nomenclature and reference pages preserve the complete page layout instead of reflowing numbers into translated prose. A contents page (and a page that scores as one without being an index) is translated item by item instead: each entry is a separate segment drawn where the entry stood, while page numbers, dot leaders, rules, links and boxes keep their source glyphs.
+
+## Covers and set pages
+
+- A region the layout model calls a figure is set text when it holds at least forty words, three or more to a line, no more than four curves or slanted strokes, and images over at most 15% of its area (an SEC cover page); it is translated item by item like a contents page. Charts and diagrams stay protected.
+- A text region whose lines leave the same column gutter (three line heights wide) on two lines is a list of items, unless the gap only follows a list marker or a paragraph number, or the region overlaps a table.
+- An item is a run of words on one line, cut at gaps wider than one and a half line heights; it continues onto the next line when that line starts in lower case, the item left a parenthesis open or ended on a connecting word ("of", "in"), or its line filled the measure; a marker such as "a)" opens a new item. Pieces of one item written apart in the content stream are joined back into one paragraph.
 
 ## Vietnamese typesetting
 

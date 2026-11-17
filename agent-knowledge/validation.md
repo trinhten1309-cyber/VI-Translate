@@ -30,8 +30,9 @@ Keep source and output hashes/paths separate. For every delivered PDF:
 7. Run `python scripts/audit_untranslated.py OUTPUT-vi.pdf` (add
    `--min-words 1` to catch dates and one-word headings). It lists every line
    still in Latin letters without a Vietnamese diacritic, page by page. Names,
-   e-mail addresses, figure labels, cover and contents pages are expected;
-   a table heading, statement title, running header or signature title in the
+   e-mail addresses, tickers, figure labels and index pages are expected;
+   a table heading, statement title, running header, signature title, cover
+   or contents entry in the
    list is an engine miss to fix in the rules, not with a hand correction.
 
 Use `tmp/pdfs/` for render/diagnostic intermediates and `output/pdf/` for final

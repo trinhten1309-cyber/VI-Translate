@@ -745,11 +745,235 @@ def running_header_lines(
             # Two words or fewer is a label ("PART I" over "Item 1"), not the
             # first line of a wrapped title.
             label = len(previous[4].split()) <= 2
-            deliberate = fits or wider or label or (text.startswith("(") and text.endswith(")"))
+            # A line in another type size is another line of the block
+            # ("SECURITIES AND EXCHANGE COMMISSION" at 18 pt over "Washington,
+            # D.C. 20549" at 12 pt).
+            resized = abs((y1 - y0) - (previous[3] - previous[1])) > 0.2 * (previous[3] - previous[1])
+            deliberate = fits or wider or label or resized or (text.startswith("(") and text.endswith(")"))
         if deliberate:
             groups.append([])
         groups[-1].append((x0, y0, x1, y1))
         previous = line
+    return groups
+
+
+def figure_is_text(
+    bounds: Sequence[float],
+    words: Iterable[Sequence[Any]],
+    images: Iterable[Sequence[float]],
+    strokes: Iterable[tuple[Sequence[float], bool]],
+) -> bool:
+    """Whether a region the model called a figure is a page of set text.
+
+    The model boxes the top of an SEC cover page ("UNITED STATES / SECURITIES
+    AND EXCHANGE COMMISSION / FORM 10-Q / ...") as one figure, so the whole
+    cover stayed in English. A cover holds lines of several words, a logo at
+    most and ruled lines; a chart or a diagram holds short labels, curves and
+    slanted strokes. Forty words or more, three or more to a line, no more
+    than four curves or slanted strokes and images over at most 15% of the
+    region make it text. `strokes` are (bounds, curved_or_slanted) drawing
+    items; all bounds are top-down.
+    """
+    x0, y0, x1, y1 = (float(value) for value in bounds)
+    area = (x1 - x0) * (y1 - y0)
+    if area <= 0:
+        return False
+
+    def inside(item: Sequence[float]) -> bool:
+        cx = (float(item[0]) + float(item[2])) / 2
+        cy = (float(item[1]) + float(item[3])) / 2
+        return x0 <= cx <= x1 and y0 <= cy <= y1
+
+    lines: dict[tuple[Any, Any], int] = {}
+    count = 0
+    for word in words:
+        if len(word) < 7 or not inside(word):
+            continue
+        count += 1
+        key = (word[5], word[6])
+        lines[key] = lines.get(key, 0) + 1
+    if count < 40 or count < 3 * len(lines):
+        return False
+    image_area = 0.0
+    for image in images:
+        ix0, iy0, ix1, iy1 = (float(value) for value in image)
+        image_area += max(0.0, min(x1, ix1) - max(x0, ix0)) * max(0.0, min(y1, iy1) - max(y0, iy0))
+    if image_area > 0.15 * area:
+        return False
+    drawn = sum(1 for stroke, slanted in strokes if slanted and inside(stroke))
+    return drawn <= 4
+
+
+LIST_LABEL_PATTERN = re.compile(r"^(?:\(?[a-z]{1,2}\)|\(?[ivx]{1,4}\)|\d{1,3}[.)]?|[A-Z]{1,2}\d{1,3}[A-Z]?|[•●▪◦*\-–—])$")
+RUN_ITEM_MARKER_PATTERN = re.compile(r"^(?:\(?[a-z]{1,2}\)|\(?[ivx]{1,4}\)|\d{1,3}[.)])$")
+CONTINUING_WORDS = {"a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "with"}
+def region_has_columns(bounds: Sequence[float], words: Iterable[Sequence[Any]]) -> bool:
+    """Whether a text region sets two or more lines in separate columns.
+
+    Microsoft's cover is boxed as text, with "WASHINGTON", "91-1144442" and
+    "(I.R.S. ID)" side by side, so the three columns read as one sentence.
+    Prose never leaves a gap of three line heights between words in the same
+    place on two lines; a region whose lines do is a list of items. A
+    justified line's wide spaces fall anywhere.
+    """
+    x0, y0, x1, y1 = (float(value) for value in bounds)
+    inside = []
+    for word in words:
+        if len(word) < 5 or not str(word[4]).strip():
+            continue
+        cx, cy = (float(word[0]) + float(word[2])) / 2, (float(word[1]) + float(word[3])) / 2
+        if x0 <= cx <= x1 and y0 <= cy <= y1:
+            inside.append(word)
+    inside.sort(key=lambda word: ((float(word[1]) + float(word[3])) / 2, float(word[0])))
+    rows: list[list[Sequence[Any]]] = []
+    for word in inside:
+        middle = (float(word[1]) + float(word[3])) / 2
+        height = float(word[3]) - float(word[1])
+        if rows and abs(middle - (float(rows[-1][0][1]) + float(rows[-1][0][3])) / 2) <= height * 0.5:
+            rows[-1].append(word)
+        else:
+            rows.append([word])
+    gutters: list[list[tuple[float, float]]] = []
+    height = 0.0
+    for row in rows:
+        row.sort(key=lambda word: float(word[0]))
+        height = max(height, median(float(word[3]) - float(word[1]) for word in row))
+        gaps = [
+            (float(before[2]), float(after[0]))
+            for position, (before, after) in enumerate(zip(row, row[1:]))
+            if float(after[0]) - float(before[2]) > 3 * (float(before[3]) - float(before[1]))
+            # The space after a list marker or a paragraph number ("(a)",
+            # "B12A", "•") is an indent, not a gutter.
+            and not (position == 0 and LIST_LABEL_PATTERN.match(str(before[4])))
+        ]
+        if gaps:
+            gutters.append(gaps)
+    # The gutter runs down the page: two lines leave the same stretch empty.
+    # A justified line's wide spaces fall anywhere.
+    for index, gaps in enumerate(gutters):
+        for other in gutters[index + 1:]:
+            for a0, a1 in gaps:
+                for b0, b1 in other:
+                    if min(a1, b1) - max(a0, b0) >= 3 * height:
+                        return True
+    return False
+
+
+LEADER_PATTERN = re.compile(r"^[.·…_]{2,}$")
+TRAILING_PAGE_REFERENCE = re.compile(r"^(?:[.·…_\-–—]{2,}|\d{1,4}|[ivxlcdm]{1,6}|[A-Z]?\d{1,4})$", re.IGNORECASE)
+
+
+def line_run_groups(
+    words: Iterable[Sequence[Any]],
+    region: Sequence[float] | None = None,
+) -> list[list[Sequence[Any]]]:
+    """The words of a set page split into the runs that read as one item each.
+
+    A contents page or a cover is a list of short items in columns, each line
+    with a page number or a second column beside it: read as prose, items on
+    one line ran together, and the whole page was protected instead. Each
+    line is cut where a gap wider than one and a half times its height opens;
+    dot leaders and the page number after them stay out of the run, and so
+    does any run without a word of two letters. A run carries on into the run
+    below it when that one starts in lower case, when it left a parenthesis
+    open or ended on a word such as "of" or "in", or when its line filled the
+    measure and the next starts at the same edge; a marker such as "a)"
+    always opens a new item. `words` are PyMuPDF words
+    (x0, y0, x1, y1, text, block, line, word), top-down.
+    """
+    chosen = []
+    for word in words:
+        if len(word) < 7 or not str(word[4]).strip():
+            continue
+        if region is not None:
+            cx, cy = (float(word[0]) + float(word[2])) / 2, (float(word[1]) + float(word[3])) / 2
+            if not (region[0] <= cx <= region[2] and region[1] <= cy <= region[3]):
+                continue
+        chosen.append(word)
+    lines: dict[tuple[Any, Any], list[Sequence[Any]]] = {}
+    for word in chosen:
+        lines.setdefault((word[5], word[6]), []).append(word)
+    runs: list[tuple[list[Sequence[Any]], bool]] = []  # words, ended by a page reference
+    for line_words in lines.values():
+        line_words.sort(key=lambda word: float(word[0]))
+        height = median(float(word[3]) - float(word[1]) for word in line_words)
+        current: list[Sequence[Any]] = []
+        pieces = []
+        for word in line_words:
+            if current and float(word[0]) - float(current[-1][2]) > 1.5 * height:
+                pieces.append(current)
+                current = []
+            current.append(word)
+        if current:
+            pieces.append(current)
+        line_runs: list[tuple[list[Sequence[Any]], bool]] = []
+        for piece in pieces:
+            ended = False
+            # Leaders and the page number after them stay as they are; a
+            # number that is part of the item ("IFRS 3") does not follow a
+            # leader.
+            while len(piece) > 1 and LEADER_PATTERN.match(str(piece[-1][4])):
+                piece = piece[:-1]
+                ended = True
+            if len(piece) > 2 and LEADER_PATTERN.match(str(piece[-2][4])) and TRAILING_PAGE_REFERENCE.match(str(piece[-1][4])):
+                piece = piece[:-2]
+                ended = True
+            if not any(re.search(r"[^\W\d_]{2,}", str(word[4])) for word in piece):
+                # A page number standing in its own column ends the item
+                # beside it on this line.
+                if line_runs and all(TRAILING_PAGE_REFERENCE.match(str(word[4])) for word in piece):
+                    line_runs[-1] = (line_runs[-1][0], True)
+                continue
+            line_runs.append((piece, ended))
+        runs.extend(line_runs)
+    runs.sort(key=lambda run: (float(run[0][0][1]), float(run[0][0][0])))
+
+    def box(run_words: list[Sequence[Any]]) -> tuple[float, float, float, float]:
+        return (
+            min(float(word[0]) for word in run_words),
+            min(float(word[1]) for word in run_words),
+            max(float(word[2]) for word in run_words),
+            max(float(word[3]) for word in run_words),
+        )
+
+    widest = max((box(run_words)[2] - box(run_words)[0] for run_words, _ended in runs), default=0.0)
+    groups: list[list[Sequence[Any]]] = []
+    open_groups: list[tuple[list[Sequence[Any]], bool]] = []
+    for run_words, ended in runs:
+        rx0, ry0, rx1, ry1 = box(run_words)
+        height = ry1 - ry0
+        first = str(run_words[0][4])
+        joined = False
+        for index in range(len(open_groups) - 1, -1, -1):
+            group, group_ended = open_groups[index]
+            gx0, gy0, gx1, gy1 = box(group)
+            if group_ended or ry0 - gy1 > 0.6 * height or ry0 < gy1 - 0.5 * height:
+                continue
+            if rx0 >= gx1 or rx1 <= gx0:
+                continue
+            if RUN_ITEM_MARKER_PATTERN.match(first):
+                break  # "a) Condensed ..." opens an item of its own
+            text = " ".join(str(word[4]) for word in group)
+            last_line = [word for word in group if float(word[1]) >= gy1 - height * 0.5]
+            last_width = (
+                max(float(word[2]) for word in last_line) - min(float(word[0]) for word in last_line)
+                if last_line else 0.0
+            )
+            continues = (
+                first[:1].islower()
+                or text.count("(") > text.count(")")
+                or (len(group) > 1 and str(group[-1][4]).lower().strip(",") in CONTINUING_WORDS)
+                or (last_width >= 0.8 * widest and abs(rx0 - gx0) <= 2.0)
+            )
+            if continues:
+                group.extend(run_words)
+                open_groups[index] = (group, ended)
+                joined = True
+                break
+        if not joined:
+            group = list(run_words)
+            groups.append(group)
+            open_groups.append((group, ended))
     return groups
 
 
@@ -780,6 +1004,7 @@ def abandon_is_unrepeated_text(
     bounds: Sequence[float],
     lines: Iterable[Sequence[Any]],
     repeated: set[tuple[str, int]],
+    max_lines: int | None = 4,
 ) -> bool:
     """Whether a region the model set aside as page furniture is a passage.
 
@@ -808,8 +1033,9 @@ def abandon_is_unrepeated_text(
         inside += 1
         words += len(re.findall(r"[A-Za-z]{2,}", text))
     # A long block set aside is a list the page carries over, such as the end
-    # of a table of contents (IFRS 3 page 3), which stays with its first page.
-    return 0 < inside <= 4 and words >= 2
+    # of a table of contents (IFRS 3 page 3); the caller translates it item by
+    # item (max_lines=None) rather than as one passage.
+    return inside > 0 and (max_lines is None or inside <= max_lines) and words >= 2
 
 
 def abandon_is_table_caption(

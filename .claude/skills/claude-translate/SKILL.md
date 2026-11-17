@@ -45,8 +45,9 @@ Kiểm tra chữ còn sót sau khi dựng:
 ```
 
 Danh sách in từng trang các dòng còn chữ Latin không dấu. Tên người, email,
-chữ trong hình, trang bìa và mục lục là bình thường; tiêu đề cột, ngày ở đầu
-cột, đầu trang hay tiêu đề báo cáo còn tiếng Anh là lỗi engine cần báo lại.
+mã chứng khoán, chữ trong hình và trang chỉ mục (Index) là bình thường; tiêu đề
+cột, ngày ở đầu cột, đầu trang, tiêu đề báo cáo, trang bìa hay mục lục còn
+tiếng Anh là lỗi engine cần báo lại.
 
 ## Quy tắc dịch
 
