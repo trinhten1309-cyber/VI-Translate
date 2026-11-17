@@ -333,6 +333,61 @@ class FinancialStatementTests(unittest.TestCase):
         self.assertIn("Cash and Cash Equivalents", texts)
         self.assertIn("Fair Value Level", texts)
 
+    def test_a_grid_under_a_tall_heading_band_still_explains_the_table(self):
+        """Page 12: the grid covers four rows, 42% of the model table."""
+        grid = SimpleNamespace(bbox=(18, 403, 593, 448), cells=[(18, 403, 306, 414), (306, 403, 373, 414)])
+        self.assertEqual(len(matching_table_cells((17, 344, 596, 450), [grid])), 2)
+        # A grid under only part of the width is not the table.
+        narrow = SimpleNamespace(bbox=(300, 403, 593, 448), cells=[(300, 403, 400, 414)])
+        self.assertEqual(matching_table_cells((17, 344, 596, 450), [narrow]), [])
+
+    def test_a_rule_between_two_headings_parts_them(self):
+        words = (_words(0, 344, (353, "Apr 26, 2026"))
+                 + _words(1, 356, (337, "Less than 12 months"))
+                 + _words(2, 404, (18, "Total"), (330, "16,187")))
+        grid = [(18, 403, 306, 414), (306, 403, 373, 414)]
+        rule = (306, 357.1, 446, 358.4)
+        joined = self._text(table_heading_cells((17, 344, 596, 450), grid, words), words)
+        self.assertIn("Apr 26, 2026 Less than 12 months", joined)
+        parted = self._text(table_heading_cells((17, 344, 596, 450), grid, words, [rule]), words)
+        self.assertIn("Apr 26, 2026", parted)
+        self.assertIn("Less than 12 months", parted)
+
+    def test_a_centred_running_header_keeps_its_lines(self):
+        from pdf2zh.rules import running_header_lines
+        header = [
+            (235, 20, 378, 29, "NVIDIA Corporation and Subsidiaries"),
+            (173, 30, 439, 39, "Notes to Condensed Consolidated Financial Statements (Continued)"),
+            (284, 40, 329, 49, "(Unaudited)"),
+            (18, 98, 241, 110, "Note 4 - Amortizable Intangible Assets and Goodwill"),
+        ]
+        self.assertEqual(len(running_header_lines(header, 612, 792)), 3)
+        # A centred title that wraps stays one paragraph,
+        title = [
+            (117, 71, 481, 85, "BERT: Pre-training of Deep Bidirectional Transformers for"),
+            (221, 87, 377, 101, "Language Understanding"),
+            (122, 131, 188, 143, "Jacob Devlin"),
+        ]
+        self.assertEqual(len(running_header_lines(title, 595, 842)), 1)
+        # and a caption whose last line is left-aligned is no header.
+        caption = [
+            (108, 71, 504, 81, "Table 1: Maximum path lengths, per-layer complexity and minimum number"),
+            (108, 82, 504, 92, "for different layer types. n is the sequence length, d is the"),
+            (108, 93, 435, 103, "size of convolutions and r the size of the neighborhood."),
+        ]
+        self.assertEqual(running_header_lines(caption, 612, 792), [])
+        # Prose across the measure is not centred text.
+        prose = [(18, 20, 595, 30, "We expect our Rubin platform"), (18, 31, 595, 41, "to start shipping")]
+        self.assertEqual(running_header_lines(prose, 612, 792), [])
+
+    def test_a_centred_line_stays_centred_when_translated(self):
+        from pdf2zh.converter import centred_line_x
+        self.assertAlmostEqual(centred_line_x(235, 378, 180, 306, 18, 595), 216)
+        # Prose that starts at the margin keeps its start,
+        self.assertIsNone(centred_line_x(18, 594, 400, 306, 18, 595))
+        # and so does a translation too wide to centre between the margins.
+        self.assertIsNone(centred_line_x(235, 378, 590, 306, 18, 595))
+
     def test_a_one_line_heading_takes_the_free_space_to_its_right(self):
         from pdf2zh.converter import available_width_right
         heading = (18, 463, 118, 474)

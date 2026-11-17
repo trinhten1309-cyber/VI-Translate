@@ -46,6 +46,7 @@ from pdf2zh.rules import (
     page_has_image,
     should_translate_table_cell,
     table_bounds_clear_of_text,
+    running_header_lines,
     table_heading_cells,
     text_aligned_table_cells,
     words_by_cell,
@@ -505,6 +506,25 @@ def translate_patch(
                     columns = slice(np.clip(int(lx0 - 1), 0, w - 1), np.clip(int(lx1 + 1), 0, w - 1))
                     patch = box[rows, columns]
                     patch[patch == 1] = i + 2
+            header_groups = running_header_lines(
+                [
+                    (*line["bbox"], "".join(span["text"] for span in line.get("spans", ())))
+                    for block in page_blocks
+                    for line in block.get("lines", [])
+                    if abs(line.get("dir", (1, 0))[1]) < 0.5
+                ],
+                float(page_rect.width),
+                float(page_rect.height),
+            )
+            header_bounds = [
+                (
+                    min(line[0] for line in group),
+                    min(line[1] for line in group),
+                    max(line[2] for line in group),
+                    max(line[3] for line in group),
+                )
+                for group in header_groups
+            ]
             translate_all = (pageno in scanned_pages
                              and bool(os.environ.get(TRANSLATE_ALL_SCAN_TEXT_ENV)))
             for i, d in enumerate(page_layout.boxes):
@@ -523,6 +543,13 @@ def translate_patch(
                             for other in page_layout.boxes
                             if page_layout.names[int(other.cls)] not in vcls
                         ],
+                    ):
+                        continue
+                    if name == "abandon" and any(
+                        max(0.0, min(raw_x1, hx1) - max(raw_x0, hx0))
+                        * max(0.0, min(raw_y1, hy1) - max(raw_y0, hy0))
+                        >= 0.5 * (hx1 - hx0) * (hy1 - hy0)
+                        for hx0, hy0, hx1, hy1 in header_bounds
                     ):
                         continue
                     if name == "abandon" and abandon_is_table_caption(
@@ -612,7 +639,9 @@ def translate_patch(
             for table_bounds in model_table_bounds:
                 cells = matching_table_cells(table_bounds, detected_tables)
                 if cells:
-                    cells = cells + table_heading_cells(table_bounds, cells, page_words)
+                    if page_rules is None:
+                        page_rules = horizontal_rules(source_page)
+                    cells = cells + table_heading_cells(table_bounds, cells, page_words, page_rules)
                 aligned = False
                 if not cells:
                     # No grid to read cells from; the text alignment may still
@@ -686,6 +715,27 @@ def translate_patch(
                         if padded[2] > padded[0] and padded[3] > padded[1]:
                             page_bounds[next_class] = padded
                         next_class += 1
+
+            # Each paragraph of a centred running header is a region of its
+            # own, so its lines do not run together into one reflowed block.
+            for group in header_groups:
+                painted = False
+                for lx0, ly0, lx1, ly1 in group:
+                    patch = box[
+                        np.clip(int(h - ly1 - 1), 0, h - 1):np.clip(int(h - ly0 + 1), 0, h - 1),
+                        np.clip(int(lx0 - 1), 0, w - 1):np.clip(int(lx1 + 1), 0, w - 1),
+                    ]
+                    writable = patch != 0
+                    patch[writable] = next_class
+                    painted = painted or bool(writable.any())
+                if painted:
+                    page_class_bounds[next_class] = (
+                        min(line[0] for line in group),
+                        page_height - max(line[3] for line in group),
+                        max(line[2] for line in group),
+                        page_height - min(line[1] for line in group),
+                    )
+                    next_class += 1
 
             # Technical documents often use ordinary prose fonts for equations.
             # Protect operator-only blocks and stacked identifiers before the

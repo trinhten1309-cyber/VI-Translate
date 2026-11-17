@@ -254,6 +254,20 @@ def matching_table_cells(
             0.0, min(my1, ty1) - max(my0, ty0)
         )
         overlap = intersection / model_area
+        # A statement rules only its figures, so the grid can start well
+        # below the model's top: NVIDIA's unrealized-loss table holds three
+        # heading lines ("Apr 26, 2026" / "Less than 12 months" / "Estimated
+        # Fair Value") over a grid of four rows, 42% of its height, and the
+        # whole table stayed in English. A grid that runs the table's width
+        # down to its bottom explains it; the band above is its headings.
+        if (
+            overlap < minimum_overlap
+            and min(mx1, tx1) - max(mx0, tx0) >= 0.9 * (mx1 - mx0)
+            and ty1 >= my1 - 0.1 * (my1 - my0)
+            and my0 < ty0
+            and ty1 - ty0 >= 0.3 * (my1 - my0)
+        ):
+            overlap = minimum_overlap
         if overlap > best_overlap:
             best, best_overlap = table, overlap
     if best is None or best_overlap < minimum_overlap:
@@ -461,6 +475,7 @@ def table_heading_cells(
     model_bounds: Sequence[Any],
     grid_cells: Sequence[Sequence[Any]],
     words: Iterable[Sequence[Any]],
+    rules: Sequence[Sequence[float]] = (),
 ) -> list[tuple[float, float, float, float]]:
     """Cells for a table's column headings, which its ruling grid leaves out.
 
@@ -541,6 +556,15 @@ def table_heading_cells(
                 continue
             if spans(first, int(second[4])) or spans(second, int(first[4])):
                 continue
+            # A rule drawn between two lines closes the upper heading: "Apr
+            # 26, 2026" is underlined above "Less than 12 months", and the two
+            # read as one cell "Apr 26, 2026 Less than 12 months".
+            if any(
+                upper[3] - 0.5 <= (rule[1] + rule[3]) / 2 <= (lower[1] + lower[3]) / 2
+                and rule[0] < min(upper[2], lower[2]) and max(upper[0], lower[0]) < rule[2]
+                for rule in rules
+            ):
+                continue
             parent[find(a)] = find(b)
 
     groups: dict[int, list[int]] = {}
@@ -601,6 +625,95 @@ def abandon_outranked_by_text(
         if union > 0 and intersection / union >= 0.8:
             return True
     return False
+
+
+def running_header_lines(
+    lines: Iterable[Sequence[Any]],
+    page_width: float,
+    page_height: float,
+    band: float = 0.1,
+) -> list[list[tuple[float, float, float, float]]]:
+    """The lines of a centred running header, grouped into the paragraphs they set.
+
+    NVIDIA's notes repeat "NVIDIA Corporation and Subsidiaries / Notes to
+    Condensed Consolidated Financial Statements (Continued) / (Unaudited)" on
+    fifteen pages. The model boxed it `abandon` on some, `plain text` on others
+    and not at all on the rest, so it stayed English on six pages and was
+    translated on nine, where the three lines ran together into one paragraph
+    that wrapped at the narrowest point ("... Thuyết minh báo / cáo tài
+    chính ..."). Each line of such a header is its own paragraph, except where
+    a centred title wraps: a line breaks deliberately when the next line's
+    first word would still have fitted on it, when the next line is the wider
+    of the two, or when the next line is a parenthetical of its own
+    ("(Unaudited)").
+
+    The same block titles each statement ("NVIDIA Corporation and
+    Subsidiaries / Condensed Consolidated Balance Sheets / (In millions) /
+    (Unaudited)"), reaching below the top tenth of the page.
+
+    `lines` are (x0, y0, x1, y1, text) in top-down page coordinates. The block
+    is the run of lines centred on the page that starts with the page's first
+    line, in its top band, each line set close under the one before, with a
+    gap after it. Two or more such lines are returned as groups of line boxes; anything else
+    returns [].
+    """
+    candidates = []
+    for line in lines:
+        x0, y0, x1, y1 = (float(value) for value in line[:4])
+        text = str(line[4]).strip()
+        if re.search(r"[A-Za-z]", text):
+            candidates.append((x0, y0, x1, y1, text))
+    if len(candidates) < 2:
+        return []
+    candidates.sort(key=lambda line: (line[1], line[0]))
+    middle = page_width / 2
+    tolerance = max(3.0, page_width * 0.01)
+
+    def centred(line: tuple[float, float, float, float, str]) -> bool:
+        # A line of prose across the measure is centred too; a heading line
+        # leaves margins on both sides.
+        return (
+            abs((line[0] + line[2]) / 2 - middle) <= tolerance
+            and line[2] - line[0] <= page_width * 0.7
+        )
+
+    if candidates[0][1] > page_height * band or not centred(candidates[0]):
+        return []
+    top = [candidates[0]]
+    for line in candidates[1:]:
+        previous = top[-1]
+        if line[1] < previous[3] - 1.0:
+            return []  # a second line beside the first: not a stacked block
+        close = line[1] - previous[3] <= max(2.0, 0.8 * (previous[3] - previous[1]))
+        if close and not centred(line):
+            # A left-aligned line set close under it ends the same paragraph:
+            # a caption across the measure ("Table 1: ...") is not a header.
+            return []
+        if not close:
+            break
+        top.append(line)
+    if len(top) < 2:
+        return []
+    widest = max(line[2] - line[0] for line in top)
+    groups: list[list[tuple[float, float, float, float]]] = []
+    previous = None
+    for line in top:
+        x0, y0, x1, y1, text = line
+        deliberate = previous is None
+        if previous is not None:
+            first_word = text.split()[0]
+            first_width = (x1 - x0) * len(first_word) / max(1, len(text))
+            space = (y1 - y0) * 0.3
+            fits = previous[2] - previous[0] + space + first_width <= widest
+            # A wrapped line holds what the line above had no room for, so
+            # it is not the wider of the two.
+            wider = x1 - x0 > previous[2] - previous[0] + space
+            deliberate = fits or wider or (text.startswith("(") and text.endswith(")"))
+        if deliberate:
+            groups.append([])
+        groups[-1].append((x0, y0, x1, y1))
+        previous = line
+    return groups
 
 
 def abandon_is_table_caption(

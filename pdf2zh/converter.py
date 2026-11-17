@@ -1351,6 +1351,13 @@ class TranslateConverter(PDFConverterEx):
                                     text_style_of(child),
                                 )
                         elif child.x1 < xt.x0:
+                            # A line holding only a space under a one-line
+                            # paragraph ("I, Jen-Hsun Huang, certify that:"
+                            # over a blank line) made it a wrapped paragraph
+                            # two lines tall, and its translation wrapped at
+                            # the English width. A blank line adds nothing.
+                            if not child.get_text().strip():
+                                continue
                             first_word_end = getattr(child, "first_word_end", None)
                             if cls not in ocr_paragraphs and pstk[-1].text_length > 1 and (
                                 line_ends_paragraph(xt.x1, page_class_bounds.get(int(cls)))
@@ -1842,6 +1849,11 @@ class TranslateConverter(PDFConverterEx):
             (paragraph.x1 for paragraph in pstk if paragraph.layout_bound is None),
             default=0.0,
         )
+        text_left = min(
+            (paragraph.x0 for paragraph in pstk if paragraph.layout_bound is None),
+            default=0.0,
+        )
+        page_middle = (float(ltpage.x0) + float(ltpage.x1)) / 2
         fit_budgets = [
             paragraph.y1 - paragraph.y0
             if paragraph.layout_bound is not None
@@ -1997,6 +2009,17 @@ class TranslateConverter(PDFConverterEx):
                     new = sstk[id]
                 else:
                     size = pstk[id].size * max(ratio, 0.5)
+            if orig_lines == 1 and not brk and pstk[id].layout_bound is None and new != sstk[id]:
+                centred = centred_line_x(
+                    pstk[id].x0,
+                    pstk[id].x1,
+                    total_new_width * size / pstk[id].size,
+                    page_middle,
+                    text_left,
+                    x1,
+                )
+                if centred is not None:
+                    x = centred
 
             # Pre-compute word-boundary line breaks to avoid mid-word splits
             if brk:
@@ -2325,6 +2348,32 @@ def available_height_below(
             continue  # a hairline touch is a different column, not a collision
         limit = max(limit, oy1)
     return max(y1 - limit, y1 - y0)
+
+
+def centred_line_x(
+    source_x0: float,
+    source_x1: float,
+    width: float,
+    page_middle: float,
+    left: float,
+    right: float,
+) -> float | None:
+    """Where a one-line translation starts so it stays centred like its source.
+
+    A paragraph is set from its source's left edge, so a centred heading
+    ("NVIDIA Corporation and Subsidiaries", "CERTIFICATION") drifted right of
+    the page's centre by whatever the translation added. A line centred on the
+    page keeps that centre when the translation fits between the page's prose
+    margins; otherwise it starts where it did. A line that starts at the left
+    margin is prose that happens to fill the measure, not a centred line.
+    """
+    tolerance = max(3.0, (page_middle - left) * 0.02)
+    if source_x0 < left + 6.0 or abs((source_x0 + source_x1) / 2 - page_middle) > tolerance:
+        return None
+    start = page_middle - width / 2
+    if start < left - 0.5 or start + width > right + 0.5:
+        return None
+    return start
 
 
 def available_width_right(

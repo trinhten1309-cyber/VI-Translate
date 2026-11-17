@@ -85,7 +85,26 @@ marker, and sent Mac users off to reinstall a complete app.
   same column continues it, a run lying over two runs of another line is a
   spanning heading ("Three Months Ended"), and each cell widens to half the
   gap beside it and up through the free heading band so its translation fits.
-  Words below the grid are not headings and are left alone.
+  Words below the grid are not headings and are left alone. A grid that runs
+  90% of the model table's width down to its bottom explains the table even
+  under 50% of its area, since the band above it is headings (NVIDIA page 12:
+  three heading lines over four rows). A drawn rule between two heading lines
+  closes the upper one ("Apr 26, 2026" over "Less than 12 months").
+- A centred block at the top of a page - a running header or a statement
+  title - is found from its lines (`running_header_lines`): the run of
+  centred lines narrower than 70% of the page that starts with the page's
+  first line in its top tenth, each close under the one before, with a gap
+  after it; a close left-aligned line after it means a caption, and nothing
+  is returned. Each paragraph of the block gets its own class, and an
+  `abandon` box over it is not protected, so the header is translated on
+  every page whatever the model called it. A line starts a new paragraph when
+  the next line's first word would have fitted on it, when the next line is
+  wider, or when the next line is one parenthetical ("(Unaudited)").
+- A translated one-line paragraph centred on the page and not starting at the
+  left margin stays centred (`centred_line_x`) when it fits between the
+  page's prose margins.
+- A line holding only a space under a paragraph is skipped: it made a
+  one-line paragraph a wrapped one, two lines tall, set at the English width.
   An `abandon` region within 16 pt above a model table and inside its width
   is that table's caption (`abandon_is_table_caption`) and is translated; a
   running header has other content between it and any table.
