@@ -480,6 +480,59 @@ class FinancialStatementTests(unittest.TestCase):
              "(State or other jurisdiction of incorporation or organization)"],
         )
 
+    def test_a_drawn_blank_does_not_cut_a_cover_line(self):
+        """Apple's "For the transition period from ____ to ____." was cut at
+        its blanks: "to" joined the title above and "Commission File Number"
+        the words before the blank."""
+        from pdf2zh.rules import line_run_groups
+        words = (
+            _words(0, 211, (84, "TRANSITION REPORT PURSUANT TO SECTION 13"))
+            + _words(1, 227, (210, "For the transition period from"), (359, "to"), (400, "."))
+            + _words(2, 241, (232, "Commission File Number: 001-36743"))
+        )
+        rules = [(337.0, 233.5, 357.0, 233.5), (370.0, 233.5, 398.0, 233.5)]
+        texts = [" ".join(word[4] for word in group) for group in line_run_groups(words, None, rules)]
+        self.assertEqual(texts, [
+            "TRANSITION REPORT PURSUANT TO SECTION 13",
+            "For the transition period from to .",
+            "Commission File Number: 001-36743",
+        ])
+        # With no blank drawn, a wide gap still parts two columns.
+        texts = [" ".join(word[4] for word in group) for group in line_run_groups(words[:-4], None, [])]
+        self.assertIn("For the transition period from", texts)
+
+    def test_a_formula_box_of_plain_words_is_text(self):
+        from pdf2zh.rules import formula_is_words
+        bounds = (270, 650, 340, 666)
+        words = _words(0, 655, (276, "Yes ☒ No ☐"))
+        self.assertTrue(formula_is_words(bounds, words))
+        self.assertFalse(formula_is_words(bounds, _words(0, 655, (276, "sin x"))))
+        self.assertFalse(formula_is_words(bounds, _words(0, 655, (276, "max min"))))
+        self.assertFalse(formula_is_words(bounds, _words(0, 655, (276, "f(x) = y"))))
+        self.assertFalse(formula_is_words(bounds, []))
+
+    def test_a_long_translation_is_wrapped_at_the_size_it_is_drawn(self):
+        """Wrapping at full size and shrinking after narrowed every line:
+        NVIDIA's cover paragraph used 70% of the page width."""
+        import math
+        from pdf2zh.converter import size_to_fit_lines
+        lines_at = lambda size: math.ceil(100 * size / 300)
+        fitted = size_to_fit_lines(lines_at, 10.0, 5.0, 30.0, 1.1)
+        self.assertTrue(8.9 < fitted <= 9.0, fitted)
+        self.assertEqual(size_to_fit_lines(lines_at, 10.0, 5.0, 60.0, 1.1), 10.0)
+        self.assertEqual(size_to_fit_lines(lambda size: 1, 10.0, 5.0, 2.0, 1.1), 10.0)
+        self.assertEqual(size_to_fit_lines(lambda size: 50, 10.0, 5.0, 30.0, 1.1), 5.0)
+
+    def test_blank_runs_and_lower_lines(self):
+        from pdf2zh.converter import blank_run, starts_lower_line
+        glyph = lambda text, y0, y1: SimpleNamespace(get_text=lambda: text, y0=y0, y1=y1)
+        self.assertTrue(blank_run([glyph("\xa0", 0, 4), glyph(" ", 0, 4)]))
+        self.assertFalse(blank_run([glyph("\xa0", 0, 4)], [object()]))
+        self.assertFalse(blank_run([glyph("☒", 0, 10)]))
+        # Microsoft's centred "OR" stands under the end of the line above.
+        self.assertTrue(starts_lower_line(glyph("O", 579.4, 590.6), glyph("5", 594.8, 603.7)))
+        self.assertFalse(starts_lower_line(glyph("x", 594.0, 603.0), glyph("5", 594.8, 603.7)))
+
     def test_a_line_two_text_boxes_share_goes_to_the_larger_part(self):
         import numpy as np
         from pdf2zh.high_level import majority_text_class

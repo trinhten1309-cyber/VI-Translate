@@ -41,6 +41,7 @@ from pdf2zh.rules import (
     abandon_is_unrepeated_text,
     figure_is_text,
     line_run_groups,
+    formula_is_words,
     region_has_columns,
     repeated_page_lines,
     is_footnote_text,
@@ -636,6 +637,21 @@ def translate_patch(
                         for hx0, hy0, hx1, hy1 in header_bounds
                     ):
                         continue
+                    if name == "isolate_formula" and formula_is_words(
+                        (raw_x0, raw_y0, raw_x1, raw_y1),
+                        doc_zh[page.pageno].get_text("words"),
+                    ) and abandon_outranked_by_text(
+                        (raw_x0, raw_y0, raw_x1, raw_y1),
+                        float(getattr(d, "conf", 1.0)),
+                        [
+                            (other.xyxy.squeeze(), float(getattr(other, "conf", 0.0)))
+                            for other in page_layout.boxes
+                            if page_layout.names[int(other.cls)] not in vcls
+                        ],
+                    ):
+                        # Words the model read as a formula and, more
+                        # surely, as text: Apple's "Yes ☒ No ☐".
+                        continue
                     if name == "abandon" and abandon_is_unrepeated_text(
                         (raw_x0, raw_y0, raw_x1, raw_y1),
                         [
@@ -967,8 +983,9 @@ def translate_patch(
             # each item is translated where it stands, while page numbers,
             # leaders, rules and boxes stay as they were.
             def translate_items(regions: list, next_class: int) -> int:
+                item_rules = horizontal_rules(source_page) if regions else []
                 for region in regions:
-                    for group in line_run_groups(page_words, region):
+                    for group in line_run_groups(page_words, region, item_rules):
                         ordered = sorted(group, key=lambda word: (float(word[1]) + float(word[3]), float(word[0])))
                         for word in group:
                             wx0, wy0, wx1, wy1 = (float(value) for value in word[:4])

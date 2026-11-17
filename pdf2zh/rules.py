@@ -632,6 +632,42 @@ def table_heading_cells(
     return sorted(cells, key=lambda cell: (cell[1], cell[0]))
 
 
+FORMULA_WORDS = frozenset({
+    "sin", "cos", "tan", "cot", "sec", "csc", "log", "ln", "exp", "lim",
+    "max", "min", "sup", "inf", "det", "arg", "mod", "deg", "dim", "ker",
+})
+CHECK_BOX_GLYPHS = frozenset("☐☑☒■□▪▫✓✔✗✘")
+
+
+def formula_is_words(bounds: Sequence[float], words: Iterable[Sequence[Any]]) -> bool:
+    """Whether a region boxed as a display formula holds only words and check boxes.
+
+    Apple's cover line "Yes ☒ No ☐" was boxed as a formula at 0.27, as
+    a title at 0.28 and as text at 0.26; protected, it stayed in English while
+    the same line further down was translated. Each token must be a word of
+    two or more letters, or a check box, and some word must not be a function
+    name such as "sin" or "max". `words` are PyMuPDF words, top-down.
+    """
+    x0, y0, x1, y1 = (float(value) for value in bounds)
+    tokens = []
+    for word in words:
+        cx, cy = (float(word[0]) + float(word[2])) / 2, (float(word[1]) + float(word[3])) / 2
+        if x0 <= cx <= x1 and y0 <= cy <= y1:
+            tokens.append(str(word[4]).strip())
+    tokens = [token for token in tokens if token]
+    if not tokens:
+        return False
+    named = False
+    for token in tokens:
+        if all(character in CHECK_BOX_GLYPHS for character in token):
+            continue
+        if not re.fullmatch(r"[A-Za-z][a-z]+[.,:;]?", token):
+            return False
+        if token.rstrip(".,:;").lower() not in FORMULA_WORDS:
+            named = True
+    return named
+
+
 def abandon_outranked_by_text(
     bounds: Sequence[float],
     confidence: float,
@@ -863,9 +899,38 @@ LEADER_PATTERN = re.compile(r"^[.·…_]{2,}$")
 TRAILING_PAGE_REFERENCE = re.compile(r"^(?:[.·…_\-–—]{2,}|\d{1,4}|[ivxlcdm]{1,6}|[A-Z]?\d{1,4})$", re.IGNORECASE)
 
 
+def gap_is_blank_to_fill(
+    left: Sequence[Any],
+    right: Sequence[Any],
+    rules: Iterable[Sequence[float]],
+) -> bool:
+    """Whether a rule drawn under the gap between two words is a blank to fill in.
+
+    "For the transition period from ______ to ______." is one line. Cut at
+    its blanks, "to" joined the title above it and "Commission File Number"
+    the words before the blank. `left` and `right` are PyMuPDF words and
+    `rules` horizontal strokes (x0, y0, x1, y1), all top-down.
+    """
+    gap0, gap1 = float(left[2]), float(right[0])
+    if gap1 <= gap0:
+        return False
+    top = min(float(left[1]), float(right[1]))
+    bottom = max(float(left[3]), float(right[3]))
+    height = bottom - top
+    for rule in rules:
+        rx0, ry0, rx1, ry1 = (float(value) for value in rule[:4])
+        middle = (ry0 + ry1) / 2
+        if not top + 0.5 * height <= middle <= bottom + 0.3 * height:
+            continue
+        if min(rx1, gap1) - max(rx0, gap0) >= 0.5 * (gap1 - gap0):
+            return True
+    return False
+
+
 def line_run_groups(
     words: Iterable[Sequence[Any]],
     region: Sequence[float] | None = None,
+    rules: Iterable[Sequence[float]] = (),
 ) -> list[list[Sequence[Any]]]:
     """The words of a set page split into the runs that read as one item each.
 
@@ -878,9 +943,12 @@ def line_run_groups(
     below it when that one starts in lower case, when it left a parenthesis
     open or ended on a word such as "of" or "in", or when its line filled the
     measure and the next starts at the same edge; a marker such as "a)"
-    always opens a new item. `words` are PyMuPDF words
-    (x0, y0, x1, y1, text, block, line, word), top-down.
+    always opens a new item. A gap over a drawn blank ("from ____ to") does
+    not cut the line. `words` are PyMuPDF words
+    (x0, y0, x1, y1, text, block, line, word), top-down; `rules` are the
+    page's horizontal strokes.
     """
+    rules = list(rules)
     chosen = []
     for word in words:
         if len(word) < 7 or not str(word[4]).strip():
@@ -900,7 +968,11 @@ def line_run_groups(
         current: list[Sequence[Any]] = []
         pieces = []
         for word in line_words:
-            if current and float(word[0]) - float(current[-1][2]) > 1.5 * height:
+            if (
+                current
+                and float(word[0]) - float(current[-1][2]) > 1.5 * height
+                and not gap_is_blank_to_fill(current[-1], word, rules)
+            ):
                 pieces.append(current)
                 current = []
             current.append(word)

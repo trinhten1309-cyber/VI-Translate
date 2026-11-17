@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterable, Sequence
 from enum import Enum, IntEnum
 from statistics import median
 from string import Template
-from typing import Dict
+from typing import Any, Dict
 
 import numpy as np
 from pdfminer.converter import PDFConverter
@@ -867,6 +867,56 @@ class PDFConverterEx(PDFConverter):
         return item.adv
 
 
+def size_to_fit_lines(
+    lines_at: Callable[[float], int],
+    size: float,
+    minimum_size: float,
+    height: float,
+    line_height: float,
+) -> float:
+    """The largest size, down to `minimum_size`, whose wrapped lines fit `height`.
+
+    `lines_at` gives the number of lines the text wraps to at a size. A text
+    that fits one line, or fits as it is, keeps its size.
+    """
+
+    def fits(candidate: float) -> bool:
+        lines = lines_at(candidate)
+        return lines <= 1 or lines * candidate * line_height <= height
+
+    if fits(size):
+        return size
+    best, low, high = minimum_size, minimum_size, size
+    for _attempt in range(12):
+        middle = (low + high) / 2
+        if fits(middle):
+            best, low = middle, middle
+        else:
+            high = middle
+    return best
+
+
+def blank_run(characters: Sequence[Any], lines: Sequence[Any] = ()) -> bool:
+    """Whether a protected run draws nothing: spaces and no rules.
+
+    Microsoft's cover sets 4 pt spaces between its lines. Held as a formula
+    they kept their width in the paragraph, and "www.microsoft.com/investor"
+    shrank to make room for 90 pt of nothing.
+    """
+    return not lines and not "".join(character.get_text() for character in characters).strip()
+
+
+def starts_lower_line(character: Any, previous: Any) -> bool:
+    """Whether a glyph stands wholly below the glyph before it.
+
+    A line that starts to the right of where the line above ended is still a
+    new line: Microsoft's centred "OR" under "For the Quarterly Period Ended
+    December 31, 2025" was read as the next word of that line. Coordinates are
+    PDF user space, y up.
+    """
+    return float(character.y1) < float(previous.y0) - 0.1
+
+
 class Paragraph:
     def __init__(self, y, x, x0, x1, y0, y1, size, brk, cls=-1, matrix=None):
         self.y: float = y
@@ -1325,10 +1375,18 @@ class TranslateConverter(PDFConverterEx):
                                 vfix = vstk[0].y0 - child.y0
                             if not pstk[-1].text_length:
                                 xt_cls = -1
-                            append_formula(len(sstk) - 1, len(var))
-                            var.append(vstk)
-                            varl.append(vlstk)
-                            varf.append(vfix)
+                            if blank_run(vstk, vlstk):
+                                # "March 28": the no-break space still parts
+                                # the words.
+                                if STYLE_TAG_PATTERN.sub("", sstk[-1]).strip() and not re.search(
+                                    r"\s(</s\d>)*$", sstk[-1]
+                                ):
+                                    append_styled(len(sstk) - 1, " ", pstk[-1].open_style)
+                            else:
+                                append_formula(len(sstk) - 1, len(var))
+                                var.append(vstk)
+                                varl.append(vlstk)
+                                varf.append(vfix)
                         vstk = []
                         vlstk = []
                         vfix = 0
@@ -1348,14 +1406,14 @@ class TranslateConverter(PDFConverterEx):
                             )):
                             close_style(len(sstk) - 1)
                             new_paragraph(child, cls)
-                        elif child.x0 > xt.x1 + 1:
+                        elif child.x0 > xt.x1 + 1 and not starts_lower_line(child, xt):
                             if pstk[-1].orientation == IDENTITY_ORIENTATION:
                                 append_styled(
                                     len(sstk) - 1,
                                     " ",
                                     text_style_of(child),
                                 )
-                        elif child.x1 < xt.x0:
+                        elif child.x1 < xt.x0 or starts_lower_line(child, xt):
                             # A line holding only a space under a one-line
                             # paragraph ("I, Jen-Hsun Huang, certify that:"
                             # over a blank line) made it a wrapped paragraph
@@ -1405,6 +1463,33 @@ class TranslateConverter(PDFConverterEx):
                             append_styled(len(sstk) - 1, " ", text_style_of(child))
                             pstk[-1].brk = True
                 if not cur_v:
+                    if (
+                        child.get_text().strip()
+                        and pstk[-1].orientation == IDENTITY_ORIENTATION
+                        and not pstk[-1].visible_length
+                    ):
+                        # Only blanks so far, and perhaps a check box: the
+                        # paragraph's line is its first letter's. Microsoft's
+                        # "91-1144442" followed a no-break space 120 pt to its
+                        # left and was set there, and a 4 pt space on the line
+                        # above lifted "QUARTERLY REPORT" and its box by 5 pt.
+                        held = "{v" in sstk[-1]
+                        if held and var and child.x0 - max(ch.x1 for ch in var[-1]) > 1.5 * child.size:
+                            # A check box standing apart from its line
+                            # ("☒      QUARTERLY REPORT") keeps its place; the
+                            # line starts where it started, not glued to it.
+                            close_style(len(sstk) - 1)
+                            new_paragraph(child, cls)
+                            held = False
+                        if not held:
+                            pstk[-1].x = pstk[-1].x0 = pstk[-1].x1 = child.x0
+                        pstk[-1].y = child.y0
+                        pstk[-1].y0 = min(child.y0, pstk[-1].y0) if held else child.y0
+                        pstk[-1].y1 = max(child.y1, pstk[-1].y1) if held else child.y1
+                        pstk[-1].size = child.size
+                        sstk[-1] = re.sub(r"^((?:</?s\d>)*)\s+", r"\1", sstk[-1])
+                        if not held:
+                            sstk[-1] = re.sub(r"\s+(?=(<s\d+>)*$)", "", sstk[-1])
                     adopt_graphic(pstk[-1], child)
                     if pstk[-1].orientation != IDENTITY_ORIENTATION:
                         pstk[-1].rotated_chars.append(child)
@@ -1459,7 +1544,7 @@ class TranslateConverter(PDFConverterEx):
             ):
                 adopt_prose_run(len(sstk) - 1, vstk)
                 lstk.extend(vlstk)
-            else:
+            elif not blank_run(vstk, vlstk):
                 append_formula(len(sstk) - 1, len(var))
                 var.append(vstk)
                 varl.append(vlstk)
@@ -2077,6 +2162,28 @@ class TranslateConverter(PDFConverterEx):
                     vlen,
                     balance_short_orphan=pstk[id].size >= 12,
                 )
+                # A translation that needs more lines than the room allows is
+                # wrapped again at the size it will be drawn at. Wrapping at
+                # the full size and shrinking afterwards narrowed every line
+                # with the glyphs: NVIDIA's cover paragraph filled 70% of the
+                # page and left the rest empty.
+                fitted = size_to_fit_lines(
+                    lambda candidate: new.count("\n") + 1 + len(
+                        balanced_wrap_positions(
+                            new, x, x0, x1, candidate, pstk[id].size * 0.5,
+                            _measure_char, vlen,
+                        )[1]
+                    ),
+                    size,
+                    pstk[id].size * 0.5,
+                    fit_budgets[id],
+                    minimum_line_height,
+                )
+                if fitted < size:
+                    size, break_positions = balanced_wrap_positions(
+                        new, x, x0, x1, fitted, pstk[id].size * 0.5,
+                        _measure_char, vlen,
+                    )
                 # Replace spaces at break positions with newlines (process in reverse)
                 for bp in sorted(break_positions, reverse=True):
                     new = new[:bp - 1] + '\n' + new[bp:]

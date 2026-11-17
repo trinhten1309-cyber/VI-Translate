@@ -131,6 +131,19 @@ marker, and sent Mac users off to reinstall a complete app.
   leaders, rules and boxes stay protected. Item classes go to the converter
   as `item_classes`, and a later piece of an item written after the column
   beside it rejoins its paragraph (`resumable_paragraph`).
+- A gap over a drawn rule ("from ____ to ____.") does not cut a cover line
+  into items (`gap_is_blank_to_fill`). A display-formula box that holds only
+  words of two letters or more and check boxes, and that the model also boxed
+  as text with more confidence, is text (`formula_is_words`).
+- A glyph wholly below the glyph before it starts a new line even when it
+  stands right of where that line ended (`starts_lower_line`). A paragraph
+  that holds only blanks so far takes the line of its first letter, and its
+  left edge too unless a protected glyph came first; a check box more than
+  1.5 em left of its text stays a paragraph of its own. A protected run of
+  spaces alone (`blank_run`) becomes one space instead of a formula.
+- A wrapped translation that overflows its room is wrapped again at the size
+  it will be drawn at (`size_to_fit_lines`), down to half size, so it still
+  fills the measure; leading is reduced before size as before.
 - A line shared by two text boxes goes whole to the box holding most of it
   (`majority_text_class`), unless it crosses protected pixels.
 - A protected glyph of another region before "(" no longer makes the bracket
